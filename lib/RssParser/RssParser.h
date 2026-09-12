@@ -69,16 +69,13 @@ class RssParser final : public Print {
   void clear();
 
  private:
-  static void XMLCALL startElement(void* userData, const XML_Char* name,
-                                    const XML_Char** atts);
+  static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL endElement(void* userData, const XML_Char* name);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);
 
   static const char* findAttribute(const XML_Char** atts, const char* name);
-  static void assignBounded(std::string& target, const char* value,
-                            size_t maxLen);
-  static void appendBounded(std::string& target, const char* value,
-                            size_t len, size_t maxLen);
+  static void assignBounded(std::string& target, const char* value, size_t maxLen);
+  static void appendBounded(std::string& target, const char* value, size_t len, size_t maxLen);
   // Trims leading/trailing ASCII whitespace in place -- author names and
   // dates often pick up surrounding newlines from pretty-printed XML.
   static void trimInPlace(std::string& s);

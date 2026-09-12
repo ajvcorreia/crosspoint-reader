@@ -53,11 +53,9 @@ size_t RssParser::write(const uint8_t* xmlData, const size_t length) {
 
     memcpy(buf, currentPos, toRead);
 
-    if (XML_ParseBuffer(parser, static_cast<int>(toRead), 0) ==
-        XML_STATUS_ERROR) {
+    if (XML_ParseBuffer(parser, static_cast<int>(toRead), 0) == XML_STATUS_ERROR) {
       errorOccured = true;
-      LOG_DBG("RSS", "Parse error at line %lu: %s",
-              XML_GetCurrentLineNumber(parser),
+      LOG_DBG("RSS", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);
       return length;
@@ -94,16 +92,14 @@ void RssParser::clear() {
   feedTruncated = false;
 }
 
-const char* RssParser::findAttribute(const XML_Char** atts,
-                                     const char* name) {
+const char* RssParser::findAttribute(const XML_Char** atts, const char* name) {
   for (int i = 0; atts[i]; i += 2) {
     if (strcmp(atts[i], name) == 0) return atts[i + 1];
   }
   return nullptr;
 }
 
-void RssParser::assignBounded(std::string& target, const char* value,
-                              const size_t maxLen) {
+void RssParser::assignBounded(std::string& target, const char* value, const size_t maxLen) {
   if (!value) {
     target.clear();
     return;
@@ -111,8 +107,7 @@ void RssParser::assignBounded(std::string& target, const char* value,
   target.assign(value, strnlen(value, maxLen));
 }
 
-void RssParser::appendBounded(std::string& target, const char* value,
-                              const size_t len, const size_t maxLen) {
+void RssParser::appendBounded(std::string& target, const char* value, const size_t len, const size_t maxLen) {
   if (target.size() >= maxLen) return;
   const size_t remaining = maxLen - target.size();
   target.append(value, len < remaining ? len : remaining);
@@ -120,13 +115,9 @@ void RssParser::appendBounded(std::string& target, const char* value,
 
 void RssParser::trimInPlace(std::string& s) {
   size_t start = 0;
-  while (start < s.size() &&
-         std::isspace(static_cast<unsigned char>(s[start])))
-    start++;
+  while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) start++;
   size_t end = s.size();
-  while (end > start &&
-         std::isspace(static_cast<unsigned char>(s[end - 1])))
-    end--;
+  while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) end--;
   s = s.substr(start, end - start);
 }
 
@@ -136,8 +127,7 @@ std::string RssParser::extractFirstImgSrc(const std::string& html) {
     const size_t imgPos = html.find("<img", pos);
     if (imgPos == std::string::npos) return "";
     const size_t tagEnd = html.find('>', imgPos);
-    const size_t searchEnd = (tagEnd == std::string::npos) ? html.size()
-                                                           : tagEnd;
+    const size_t searchEnd = (tagEnd == std::string::npos) ? html.size() : tagEnd;
 
     const size_t srcPos = html.find("src=", imgPos);
     if (srcPos == std::string::npos || srcPos >= searchEnd) {
@@ -169,20 +159,16 @@ void RssParser::finishArticle() {
   articles.push_back(std::move(currentArticle));
 }
 
-void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
-                                     const XML_Char** atts) {
+void XMLCALL RssParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<RssParser*>(userData);
 
-  if (xmlLocalNameEquals(name, "item") ||
-      xmlLocalNameEquals(name, "entry")) {
+  if (xmlLocalNameEquals(name, "item") || xmlLocalNameEquals(name, "entry")) {
     self->inItem = true;
     self->collectCurrentArticle = self->articles.size() < MAX_ARTICLES;
-    self->feedTruncated =
-        self->feedTruncated || !self->collectCurrentArticle;
+    self->feedTruncated = self->feedTruncated || !self->collectCurrentArticle;
     self->currentArticle = RssArticle{};
     self->currentText.clear();
-    self->inTitle = self->inLink = self->inAuthor =
-        self->inPublishedAt = self->inContent = false;
+    self->inTitle = self->inLink = self->inAuthor = self->inPublishedAt = self->inContent = false;
     self->contentIsHighPriority = false;
     return;
   }
@@ -194,8 +180,7 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
       // rel="enclosure"/"self" links; only "alternate" (or an absent rel,
       // which defaults to alternate per the Atom spec) is the article link.
       const char* rel = findAttribute(atts, "rel");
-      if (self->inItem && self->collectCurrentArticle &&
-          self->currentArticle.link.empty() &&
+      if (self->inItem && self->collectCurrentArticle && self->currentArticle.link.empty() &&
           (!rel || strcmp(rel, "alternate") == 0)) {
         assignBounded(self->currentArticle.link, href, MAX_HREF_CHARS);
       }
@@ -221,8 +206,7 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
   if (xmlLocalNameEquals(name, "title")) {
     self->inTitle = true;
     self->currentText.clear();
-  } else if (xmlLocalNameEquals(name, "author") ||
-             xmlLocalNameEquals(name, "creator")) {
+  } else if (xmlLocalNameEquals(name, "author") || xmlLocalNameEquals(name, "creator")) {
     // Covers RSS's bare <author>text</author>, Atom's
     // <author><name>text</name></author> wrapper (character data is
     // collected across the whole span regardless of the intervening <name>,
@@ -232,8 +216,7 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
       self->inAuthor = true;
       self->currentText.clear();
     }
-  } else if (xmlLocalNameEquals(name, "pubDate") ||
-             xmlLocalNameEquals(name, "updated") ||
+  } else if (xmlLocalNameEquals(name, "pubDate") || xmlLocalNameEquals(name, "updated") ||
              xmlLocalNameEquals(name, "published")) {
     if (self->currentArticle.publishedAt.empty()) {
       self->inPublishedAt = true;
@@ -244,8 +227,7 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
       const char* url = findAttribute(atts, "url");
       const char* type = findAttribute(atts, "type");
       if (url && type && strncmp(type, "image/", 6) == 0) {
-        assignBounded(self->currentArticle.imageUrl, url,
-                      MAX_IMAGE_URL_CHARS);
+        assignBounded(self->currentArticle.imageUrl, url, MAX_IMAGE_URL_CHARS);
       }
     }
   } else if (xmlLocalNameEquals(name, "content")) {
@@ -257,11 +239,9 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
         const char* medium = findAttribute(atts, "medium");
         const char* type = findAttribute(atts, "type");
         const bool looksLikeImage =
-            (medium && strcmp(medium, "image") == 0) ||
-            (type && strncmp(type, "image/", 6) == 0);
+            (medium && strcmp(medium, "image") == 0) || (type && strncmp(type, "image/", 6) == 0);
         if (looksLikeImage) {
-          assignBounded(self->currentArticle.imageUrl, url,
-                        MAX_IMAGE_URL_CHARS);
+          assignBounded(self->currentArticle.imageUrl, url, MAX_IMAGE_URL_CHARS);
         }
       }
     } else {
@@ -273,8 +253,7 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
     // content:encoded (RSS extension) -- full HTML body, highest priority.
     self->inContent = true;
     self->currentText.clear();
-  } else if (xmlLocalNameEquals(name, "description") ||
-             xmlLocalNameEquals(name, "summary")) {
+  } else if (xmlLocalNameEquals(name, "description") || xmlLocalNameEquals(name, "summary")) {
     if (!self->contentIsHighPriority) {
       self->inContent = true;
       self->currentText.clear();
@@ -285,8 +264,7 @@ void XMLCALL RssParser::startElement(void* userData, const XML_Char* name,
 void XMLCALL RssParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<RssParser*>(userData);
 
-  if (xmlLocalNameEquals(name, "item") ||
-      xmlLocalNameEquals(name, "entry")) {
+  if (xmlLocalNameEquals(name, "item") || xmlLocalNameEquals(name, "entry")) {
     self->finishArticle();
     self->inItem = false;
     self->collectCurrentArticle = false;
@@ -308,34 +286,29 @@ void XMLCALL RssParser::endElement(void* userData, const XML_Char* name) {
     self->inTitle = false;
   } else if (xmlLocalNameEquals(name, "link")) {
     if (self->inLink) {
-      assignBounded(self->currentArticle.link, self->currentText.c_str(),
-                    MAX_HREF_CHARS);
+      assignBounded(self->currentArticle.link, self->currentText.c_str(), MAX_HREF_CHARS);
       self->inLink = false;
     }
-  } else if (xmlLocalNameEquals(name, "author") ||
-             xmlLocalNameEquals(name, "creator")) {
+  } else if (xmlLocalNameEquals(name, "author") || xmlLocalNameEquals(name, "creator")) {
     if (self->inAuthor) {
       trimInPlace(self->currentText);
       self->currentArticle.author = self->currentText;
       self->inAuthor = false;
     }
-  } else if (xmlLocalNameEquals(name, "pubDate") ||
-             xmlLocalNameEquals(name, "updated") ||
+  } else if (xmlLocalNameEquals(name, "pubDate") || xmlLocalNameEquals(name, "updated") ||
              xmlLocalNameEquals(name, "published")) {
     if (self->inPublishedAt) {
       trimInPlace(self->currentText);
       self->currentArticle.publishedAt = self->currentText;
       self->inPublishedAt = false;
     }
-  } else if (xmlLocalNameEquals(name, "content") ||
-             xmlLocalNameEquals(name, "encoded")) {
+  } else if (xmlLocalNameEquals(name, "content") || xmlLocalNameEquals(name, "encoded")) {
     if (self->inContent) {
       self->currentArticle.contentHtml = self->currentText;
       self->contentIsHighPriority = true;
       self->inContent = false;
     }
-  } else if (xmlLocalNameEquals(name, "description") ||
-             xmlLocalNameEquals(name, "summary")) {
+  } else if (xmlLocalNameEquals(name, "description") || xmlLocalNameEquals(name, "summary")) {
     if (self->inContent && !self->contentIsHighPriority) {
       self->currentArticle.contentHtml = self->currentText;
       self->inContent = false;
@@ -343,8 +316,7 @@ void XMLCALL RssParser::endElement(void* userData, const XML_Char* name) {
   }
 }
 
-void XMLCALL RssParser::characterData(void* userData, const XML_Char* s,
-                                      const int len) {
+void XMLCALL RssParser::characterData(void* userData, const XML_Char* s, const int len) {
   auto* self = static_cast<RssParser*>(userData);
   if (self->inTitle) {
     appendBounded(self->currentText, s, len, MAX_TITLE_CHARS);

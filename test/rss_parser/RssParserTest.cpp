@@ -148,6 +148,7 @@ TEST(RssParser, AtomBasicFields) {
   ASSERT_EQ(parser.getArticles().size(), 1u);
   const auto& a = parser.getArticles()[0];
   EXPECT_EQ(a.title, "Atom Entry One");
+  // rel="alternate" wins over the rel="self" feed-URL link that appears first.
   EXPECT_EQ(a.link, "https://example.com/atom-one");
   EXPECT_EQ(a.contentHtml, "An Atom summary.");
   EXPECT_EQ(a.publishedAt, "2026-01-01T12:00:00Z");
@@ -186,6 +187,8 @@ TEST(RssParser, EnclosureNonImageIgnoredFallsBackToInlineImg) {
   RssParser parser;
   ASSERT_TRUE(parseString(parser, kEnclosureNonImageIgnored));
   ASSERT_EQ(parser.getArticles().size(), 1u);
+  // The podcast .mp3 enclosure must not be picked up as an image; the inline
+  // <img> inside the (HTML-escaped) description is the fallback.
   EXPECT_EQ(parser.getArticles()[0].imageUrl, "https://example.com/fallback.png");
 }
 
