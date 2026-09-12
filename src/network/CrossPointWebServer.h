@@ -135,6 +135,11 @@ class CrossPointWebServer {
   void handlePostOpdsServer();
   void handleDeleteOpdsServer();
 
+  // RSS feed handlers
+  void handleGetRssFeeds() const;
+  void handlePostRssFeed();
+  void handleDeleteRssFeed();
+
   // Wi-Fi credential handlers
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();

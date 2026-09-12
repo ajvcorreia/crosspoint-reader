@@ -302,6 +302,7 @@
 
   <div id="wifi-container"></div>
   <div id="opds-container"></div>
+  <div id="rss-container"></div>
 
   <div class="card">
     <p style="text-align: center; color: #95a5a6; margin: 0;">
@@ -823,6 +824,107 @@
     }
   }
 
+  // --- RSS Feed Management ---
+  // Dynamically renders an editable list of RSS feeds, communicating with the
+  // /api/rss REST endpoints. No credentials in v1 -- unlike OPDS servers,
+  // there's no password field to preserve on save.
+  let rssFeeds = [];
+
+  function renderRssFeed(feed, idx) {
+    const isNew = idx === -1;
+    const id = isNew ? 'new' : idx;
+    return '<div class="opds-server" id="rss-' + id + '">' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Feed Name</span>' +
+        '<span class="setting-control"><input type="text" id="rss-name-' + id + '" value="' + escapeHtml(feed.name || '') + '"></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Feed URL</span>' +
+        '<span class="setting-control"><input type="text" id="rss-url-' + id + '" value="' + escapeHtml(feed.url || '') + '"></span>' +
+      '</div>' +
+      '<div class="opds-actions">' +
+        '<button class="btn-small btn-save-server" onclick="saveRssFeed(' + idx + ')">Save</button>' +
+        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteRssFeed(' + idx + ')">Delete</button>') +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderRssSection() {
+    const container = document.getElementById('rss-container');
+    let html = '<div class="card"><h2>RSS Feeds</h2>';
+
+    if (rssFeeds.length === 0) {
+      html += '<p style="color:var(--label-color);text-align:center;">No RSS feeds configured</p>';
+    } else {
+      rssFeeds.forEach(function(feed, idx) {
+        html += renderRssFeed(feed, idx);
+      });
+    }
+
+    html += '<div style="margin-top:12px;text-align:center;">' +
+      '<button class="btn-small btn-add" onclick="addRssFeed()">+ Add Feed</button>' +
+    '</div></div>';
+    container.innerHTML = html;
+  }
+
+  async function loadRssFeeds() {
+    try {
+      const resp = await fetch('/api/rss');
+      if (!resp.ok) throw new Error('Failed to load');
+      rssFeeds = await resp.json();
+      renderRssSection();
+    } catch (e) {
+      console.error('RSS load error:', e);
+    }
+  }
+
+  function addRssFeed() {
+    const container = document.getElementById('rss-container');
+    const card = container.querySelector('.card');
+    const addBtn = card.querySelector('.btn-add').parentElement;
+    // Prevent multiple unsaved new-feed forms at once (idx -1 → id "new")
+    if (document.getElementById('rss-new')) return;
+    addBtn.insertAdjacentHTML('beforebegin', renderRssFeed({name:'',url:''}, -1));
+  }
+
+  async function saveRssFeed(idx) {
+    const id = idx === -1 ? 'new' : idx;
+    const data = {
+      name: document.getElementById('rss-name-' + id).value,
+      url: document.getElementById('rss-url-' + id).value,
+    };
+    if (idx >= 0) data.index = idx;
+
+    try {
+      const resp = await fetch('/api/rss', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      showMessage('RSS feed saved!', false);
+      await loadRssFeeds();
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+
+  async function deleteRssFeed(idx) {
+    if (!confirm('Delete this RSS feed?')) return;
+    try {
+      const resp = await fetch('/api/rss/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: idx})
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      showMessage('RSS feed deleted', false);
+      await loadRssFeeds();
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+
   // Sequential, not concurrent: the device's web server handles one client
   // connection at a time, and three simultaneous fetches on page load can
   // stall long enough inside a single response to trip the firmware watchdog.
@@ -830,6 +932,7 @@
     await loadSettings();
     await loadWifiNetworks();
     await loadOpdsServers();
+    await loadRssFeeds();
   })();
 </script>
 </body>
