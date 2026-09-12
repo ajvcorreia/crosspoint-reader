@@ -21,6 +21,9 @@ class RssArticleListActivity final : public UiListActivity {
   int listCount() const override { return 0; }
   void buildScreen(UiScreen& screen) override;
   const char* headerTitle() const override;
+  // No rows in this stub (listCount() == 0), so this is never actually
+  // invoked -- still required, UiListActivity declares it pure virtual.
+  void activateIndex(int) override {}
 
   // Copied at construction, same rationale as OpdsBookBrowserActivity's own
   // OpdsServer member: safe even if the store changes while this is open.
