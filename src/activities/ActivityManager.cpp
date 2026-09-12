@@ -14,6 +14,7 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "browser/RssFeedBrowserActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -260,6 +261,13 @@ void ActivityManager::goToBrowser() {
   } else {
     replaceActivity(std::make_unique<OpdsServerListActivity>(renderer, mappedInput, true));
   }
+}
+
+void ActivityManager::goToRssFeedBrowser() {
+  // Unlike goToBrowser(), there's no "skip the picker with only one feed"
+  // shortcut -- the feed list is always shown first (feed selection is the
+  // point of entry here, not a fallback).
+  replaceActivity(std::make_unique<RssFeedBrowserActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh) {

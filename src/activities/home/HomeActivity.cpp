@@ -19,6 +19,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "RssFeedStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -28,6 +29,9 @@ int HomeActivity::getMenuItemCount() const {
     count += recentBooks.size();
   }
   if (hasOpdsServers) {
+    count++;
+  }
+  if (hasRssFeeds) {
     count++;
   }
   return count;
@@ -114,12 +118,14 @@ void HomeActivity::onEnter() {
   Activity::onEnter();
 
   hasOpdsServers = OPDS_STORE.hasServers();
+  hasRssFeeds = RSS_STORE.hasFeeds();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
 
   const auto base = static_cast<int>(recentBooks.size());
-  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
+  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers,
+                                                                                       hasRssFeeds);
 
   // Trigger first update
   requestUpdate();
@@ -178,7 +184,7 @@ void HomeActivity::loop() {
       return;
     }
     const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
-    switch (indexToMenuItem(menuIndex, hasOpdsServers)) {
+    switch (indexToMenuItem(menuIndex, hasOpdsServers, hasRssFeeds)) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
         break;
@@ -187,6 +193,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuItem::OPDS_BROWSER:
         onOpdsBrowserOpen();
+        break;
+      case HomeMenuItem::RSS_READER:
+        onRssReaderOpen();
         break;
       case HomeMenuItem::FILE_TRANSFER:
         onFileTransferOpen();
@@ -314,6 +323,14 @@ void HomeActivity::render(RenderLock&&) {
     menuIcons.insert(menuIcons.begin() + 2, Library);
   }
 
+  if (hasRssFeeds) {
+    // Lands right after OPDS Browser when both are present, or in that same
+    // slot when OPDS isn't configured.
+    const auto rssPos = hasOpdsServers ? 3 : 2;
+    menuItems.insert(menuItems.begin() + rssPos, tr(STR_RSS_READER));
+    menuIcons.insert(menuIcons.begin() + rssPos, Text);
+  }
+
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
     // Insert Continue Reading at the top if enabled in theme
     menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
@@ -356,3 +373,5 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onRssReaderOpen() { activityManager.goToRssFeedBrowser(); }
