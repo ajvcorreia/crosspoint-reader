@@ -2,28 +2,32 @@
 
 #include <Arduino.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <utility>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/EndOfBookOptions.h"
 #include "components/UITheme.h"
 #include "network/HttpDownloader.h"
 #include "util/RssArticleEpubWriter.h"
+#include "util/StringUtils.h"
 
 namespace fui = freeink::ui;
 
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
-// Scratch output, not a library book: overwritten by whichever article was
-// opened most recently. See the class comment on why a fixed single path is
-// fine here (goToReader() replaces the whole activity stack either way).
-constexpr const char* ARTICLE_EPUB_PATH = "/.crosspoint/rss_article.epub";
+// Scratch output, not a library book -- see the class comment on why this is
+// a shared, feed-ordered folder rather than a single fixed path.
+constexpr const char* RSS_ARTICLES_DIR = "/.crosspoint/rss_articles";
 }  // namespace
 
 RssArticleListActivity::RssArticleListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, RssFeed feed)
@@ -62,20 +66,49 @@ void RssArticleListActivity::onExit() {
   }
 }
 
+std::string RssArticleListActivity::articleEpubPath(const size_t index) const {
+  char indexPrefix[4];
+  snprintf(indexPrefix, sizeof(indexPrefix), "%02zu", index);
+
+  const auto& article = articles[index];
+  std::string path = RSS_ARTICLES_DIR;
+  path += "/";
+  path += indexPrefix;
+  path += " - ";
+  path += StringUtils::sanitizeFilename(article.title.empty() ? article.link : article.title);
+  path += ".epub";
+  return path;
+}
+
 void RssArticleListActivity::activateSelected() {
   if (articles.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(articles.size())) return;
 
-  const auto& article = articles[static_cast<size_t>(selectorIndex)];
-  if (!RssArticleEpubWriter::write(article, ARTICLE_EPUB_PATH)) {
-    state = BrowserState::ERROR;
-    errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
-    requestUpdate();
-    return;
+  // Writes the tapped article plus a short lookahead so EndOfBookOptions'
+  // folder-based "Continue with..." suggestions -- which only consider files
+  // that already exist -- have real next-article files ready by the time the
+  // reader reaches the end of this one. Unconditionally overwritten rather
+  // than tracked: a handful of small re-writes per tap is simpler than
+  // bookkeeping which indices are already current, and cheap either way.
+  const auto start = static_cast<size_t>(selectorIndex);
+  const size_t end = std::min(articles.size(), start + 1 + EndOfBookOptions::MAX_SUGGESTIONS);
+  std::string openPath;
+  for (size_t i = start; i < end; i++) {
+    const std::string path = articleEpubPath(i);
+    if (!RssArticleEpubWriter::write(articles[i], path)) {
+      if (i == start) {
+        state = BrowserState::ERROR;
+        errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
+        requestUpdate();
+        return;
+      }
+      break;  // lookahead write failed; the tapped article itself still opens fine
+    }
+    if (i == start) openPath = path;
   }
 
   // Replaces the whole activity stack, same as opening any other book --
   // see the class comment on why that's the right behavior here.
-  activityManager.goToReader(ARTICLE_EPUB_PATH);
+  activityManager.goToReader(openPath);
 }
 
 void RssArticleListActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
@@ -314,6 +347,15 @@ void RssArticleListActivity::fetchArticles() {
   if (feedTruncated) {
     LOG_INF("RSS", "Feed truncated to fit memory");
   }
+
+  // Fresh feed load: drop any per-article EPUBs left over from a previous
+  // feed so they can never leak into this feed's "Continue with..." chain
+  // (see the class comment). Recreated even when empty, so it's always in
+  // sync with whatever this fetch produced.
+  if (Storage.exists(RSS_ARTICLES_DIR)) {
+    Storage.removeDir(RSS_ARTICLES_DIR);
+  }
+  Storage.mkdir(RSS_ARTICLES_DIR);
 
   state = articles.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (articles.empty()) errorMessage = tr(STR_RSS_NO_ARTICLES);

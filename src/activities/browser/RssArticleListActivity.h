@@ -37,12 +37,22 @@
  * Selecting an article assembles a minimal, text-only EPUB from its content
  * (RssArticleEpubWriter, backed by the from-scratch STORED-only ZipWriter --
  * ZipFile only reads) and opens it via the normal reader, the same way any
- * other book is opened. That EPUB is scratch output, not a library book: it
- * is written to a single fixed path and overwritten by the next article
- * opened, and opening it goes through ActivityManager::goToReader(), which
- * replaces the whole activity stack -- so Back from the reader lands on
- * Home, exactly like opening any book from the file browser, not back on
+ * other book is opened. Opening it goes through ActivityManager::goToReader(),
+ * which replaces the whole activity stack -- so Back from the reader lands
+ * on Home, exactly like opening any book from the file browser, not back on
  * this list.
+ *
+ * These EPUBs are scratch output, not library books, but they are written
+ * as a shared, feed-ordered folder (one file per article, filenames prefixed
+ * with a zero-padded index) rather than to a single fixed path: that is what
+ * lets the reader's existing end-of-book "Continue with..." suggestion menu
+ * (EndOfBookOptions / NextBookFinder, which finds sibling files in the same
+ * folder that sort after the current one) chain forward through the feed
+ * with no reader-side changes at all. The folder is cleared and repopulated
+ * on every successful fetchArticles(), so a stale previous feed's articles
+ * never leak into the current one's chain. Tapping an article (re)writes it
+ * plus a short lookahead (EndOfBookOptions::MAX_SUGGESTIONS articles ahead)
+ * so those sibling files already exist by the time the reader looks for them.
  */
 class RssArticleListActivity final : public Activity, private UiAppHost {
  public:
@@ -82,6 +92,9 @@ class RssArticleListActivity final : public Activity, private UiAppHost {
   void buildStatusScreen(UiScreen& screen);
   void rebuildRowItems();
   void activateSelected();
+  // Path for articles[index]'s generated EPUB inside the shared, feed-ordered
+  // scratch folder -- see the class comment.
+  std::string articleEpubPath(size_t index) const;
 
   void checkAndConnectWifi();
   void launchWifiSelection();
