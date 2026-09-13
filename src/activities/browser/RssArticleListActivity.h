@@ -50,18 +50,18 @@
  * folder that sort after the current one) chain forward through the feed
  * with no reader-side changes at all. The folder is cleared and repopulated
  * on every successful fetchArticles(), so a stale previous feed's articles
- * never leak into the current one's chain. Tapping an article (re)writes it
- * plus a short lookahead (EndOfBookOptions::MAX_SUGGESTIONS articles ahead)
- * so those sibling files already exist by the time the reader looks for them.
+ * never leak into the current one's chain.
  *
- * Only the explicitly tapped article's hero image (article.imageUrl) is
- * downloaded and embedded -- lookahead articles stay text-only, since eagerly
- * fetching images for several articles the user hasn't asked to read yet
- * would make every tap noticeably slower for no benefit if they never
- * continue that far. That means an article reached via "Continue with..."
- * (rather than tapped directly from this list) currently opens without its
- * image; a known, deliberate limit of combining eager-lookahead chaining
- * with per-article image embedding, not a bug.
+ * Tapping an article writes it AND every article after it in the feed (not
+ * just a short lookahead), each with its hero image embedded if it has one,
+ * so "Continue with..." can walk all the way to the end of the feed with
+ * images throughout, not just a few articles ahead. This is a deliberate
+ * experiment, called out explicitly because it trades away the previous
+ * design's responsiveness: for a feed with many articles this can mean many
+ * sequential image downloads before the tapped article even opens, which is
+ * why a LOADING screen covers activateSelected()'s write loop. If that proves
+ * too slow in practice, the fix is to cut the loop back to a short lookahead
+ * again (as it was before) rather than the whole remaining feed.
  */
 class RssArticleListActivity final : public Activity, private UiAppHost {
  public:

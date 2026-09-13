@@ -16,11 +16,11 @@
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
-#include "activities/reader/EndOfBookOptions.h"
 #include "components/UITheme.h"
 #include "network/HttpDownloader.h"
 #include "util/RssArticleEpubWriter.h"
 #include "util/StringUtils.h"
+#include "util/TaskWatchdog.h"
 
 namespace fui = freeink::ui;
 
@@ -143,29 +143,28 @@ std::string RssArticleListActivity::articleEpubPath(const size_t index) const {
 void RssArticleListActivity::activateSelected() {
   if (articles.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(articles.size())) return;
 
-  // Writes the tapped article plus a short lookahead so EndOfBookOptions'
-  // folder-based "Continue with..." suggestions -- which only consider files
-  // that already exist -- have real next-article files ready by the time the
-  // reader reaches the end of this one. Unconditionally overwritten rather
-  // than tracked: a handful of small re-writes per tap is simpler than
-  // bookkeeping which indices are already current, and cheap either way.
+  // Writes the tapped article and every article after it (see the class
+  // comment on why this covers the whole remaining feed, not a short
+  // lookahead, and why that's an explicit experiment rather than a settled
+  // design). Unconditionally overwritten rather than tracked: simpler than
+  // bookkeeping which indices are already current, and still cheap per
+  // article even if some of that work is redundant across taps.
   //
-  // Only the tapped article's image is fetched: a hero-image download can
-  // take a couple of seconds, and paying that cost for up to
-  // MAX_SUGGESTIONS lookahead articles the user hasn't asked to read yet
-  // would make every tap noticeably slower for no benefit if they never
-  // continue that far. Chained-to articles (opened via "Continue with...")
-  // stay text-only for now -- a known, deliberate limit of combining
-  // eager-lookahead chaining with per-article image embedding.
+  // This can take a while for a feed with many articles, each downloading
+  // its own image -- shown as a LOADING screen rather than left silent so
+  // it doesn't look like the device has frozen.
+  state = BrowserState::LOADING;
+  statusMessage = tr(STR_RSS_PREPARING_ARTICLES);
+  requestUpdate(true);
+
   const auto start = static_cast<size_t>(selectorIndex);
-  const size_t end = std::min(articles.size(), start + 1 + EndOfBookOptions::MAX_SUGGESTIONS);
   std::string openPath;
-  for (size_t i = start; i < end; i++) {
+  for (size_t i = start; i < articles.size(); i++) {
     const std::string path = articleEpubPath(i);
 
     std::string imagePath;
     bool imageIsPng = false;
-    if (i == start && !articles[i].imageUrl.empty()) {
+    if (!articles[i].imageUrl.empty()) {
       imagePath = downloadArticleImage(articles[i].imageUrl, imageIsPng);
     }
 
@@ -179,9 +178,15 @@ void RssArticleListActivity::activateSelected() {
         requestUpdate();
         return;
       }
-      break;  // lookahead write failed; the tapped article itself still opens fine
+      // One article in the batch failed (e.g. a transient network hiccup);
+      // keep going for the rest rather than abandoning the whole feed.
+    } else if (i == start) {
+      openPath = path;
     }
-    if (i == start) openPath = path;
+
+    // This loop can run long (network fetch per article); make sure it
+    // never trips the task watchdog on a feed with many articles.
+    resetTaskWatchdogIfSubscribed();
   }
 
   // Replaces the whole activity stack, same as opening any other book --
