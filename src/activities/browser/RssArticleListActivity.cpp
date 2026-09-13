@@ -19,6 +19,7 @@
 #include "components/UITheme.h"
 #include "network/HttpDownloader.h"
 #include "util/RssArticleEpubWriter.h"
+#include "util/RssArticlePaths.h"
 #include "util/StringUtils.h"
 #include "util/TaskWatchdog.h"
 
@@ -26,15 +27,18 @@ namespace fui = freeink::ui;
 
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
-// Scratch output, not a library book -- see the class comment on why this is
-// a shared, feed-ordered folder rather than a single fixed path.
-constexpr const char* RSS_ARTICLES_DIR = "/.crosspoint/rss_articles";
 
 constexpr const char* IMAGE_TEMP_PATH = "/.crosspoint/rss_image.tmp";
 // A single article's hero image, not a whole gallery -- 2MB comfortably
 // covers a real-world article photo while bounding worst-case SD/network
 // time for a pathological URL.
 constexpr size_t MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+
+// Matches OpdsBookBrowserActivity's own DOWNLOAD_PROGRESS_MIN_UPDATE_MS:
+// caps how often activateSelected()'s progress bar redraws, since each
+// redraw is itself a real e-ink refresh that would otherwise add up on a
+// feed with many articles.
+constexpr unsigned long PREPARE_PROGRESS_MIN_UPDATE_MS = 5000;
 
 // Downloads imageUrl (if it looks like an absolute http(s) URL -- relative
 // URLs would need the feed's base URL to resolve and are out of scope for
@@ -131,7 +135,7 @@ std::string RssArticleListActivity::articleEpubPath(const size_t index) const {
   snprintf(indexPrefix, sizeof(indexPrefix), "%02zu", index);
 
   const auto& article = articles[index];
-  std::string path = RSS_ARTICLES_DIR;
+  std::string path = RssArticlePaths::ARTICLES_DIR;
   path += "/";
   path += indexPrefix;
   path += " - ";
@@ -151,14 +155,20 @@ void RssArticleListActivity::activateSelected() {
   // article even if some of that work is redundant across taps.
   //
   // This can take a while for a feed with many articles, each downloading
-  // its own image -- shown as a LOADING screen rather than left silent so
-  // it doesn't look like the device has frozen.
+  // its own image -- shown as a LOADING screen with a progress bar rather
+  // than left silent so it doesn't look like the device has frozen. Redraws
+  // are time-throttled (PREPARE_PROGRESS_MIN_UPDATE_MS), same reasoning as
+  // OpdsBookBrowserActivity's own download progress: an e-ink refresh per
+  // article would itself add up to real time on a feed with many articles.
+  const auto start = static_cast<size_t>(selectorIndex);
   state = BrowserState::LOADING;
   statusMessage = tr(STR_RSS_PREPARING_ARTICLES);
+  prepareProgress = 0;
+  prepareTotal = articles.size() - start;
   requestUpdate(true);
 
-  const auto start = static_cast<size_t>(selectorIndex);
   std::string openPath;
+  unsigned long lastProgressUpdateMs = millis();
   for (size_t i = start; i < articles.size(); i++) {
     const std::string path = articleEpubPath(i);
 
@@ -175,6 +185,7 @@ void RssArticleListActivity::activateSelected() {
       if (i == start) {
         state = BrowserState::ERROR;
         errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
+        prepareTotal = 0;
         requestUpdate();
         return;
       }
@@ -184,11 +195,19 @@ void RssArticleListActivity::activateSelected() {
       openPath = path;
     }
 
+    prepareProgress = i - start + 1;
+    const unsigned long now = millis();
+    if (prepareProgress == prepareTotal || now - lastProgressUpdateMs >= PREPARE_PROGRESS_MIN_UPDATE_MS) {
+      lastProgressUpdateMs = now;
+      requestUpdate(true);
+    }
+
     // This loop can run long (network fetch per article); make sure it
     // never trips the task watchdog on a feed with many articles.
     resetTaskWatchdogIfSubscribed();
   }
 
+  prepareTotal = 0;
   // Replaces the whole activity stack, same as opening any other book --
   // see the class comment on why that's the right behavior here.
   activityManager.goToReader(openPath);
@@ -353,6 +372,29 @@ void RssArticleListActivity::buildStatusScreen(UiScreen& screen) {
     if (showTapHint) screen.target().text(screen.takeTop(lh), tr(STR_TAP_TO_RETRY), centered);
     return;
   }
+
+  if (state == BrowserState::LOADING && prepareTotal > 0) {
+    // activateSelected()'s "Preparing articles..." screen: message + a
+    // progress bar, laid out the same way as OpdsBookBrowserActivity's own
+    // download screen.
+    const int16_t lh = screen.target().lineHeight(centered.font);
+    const int16_t gap = screen.theme().spaceMd;
+    const int16_t barH = 16;
+    const int16_t blockH = static_cast<int16_t>(lh + barH + gap);
+    const fui::Rect body = screen.body();
+    if (body.height > blockH) screen.spacer(static_cast<int16_t>((body.height - blockH) / 2));
+    screen.target().text(screen.takeTop(lh, gap), statusMessage.c_str(), centered);
+
+    const fui::Rect bar = screen.takeTop(barH, gap).inset(fui::Insets{0, 50, 0, 50});
+    fui::ProgressBarProps progress;
+    progress.value = static_cast<int32_t>(prepareProgress);
+    progress.max = static_cast<int32_t>(prepareTotal);
+    progress.border = fui::Paint::solid(fui::Color::Black);
+    progress.borderWidth = 1;
+    fui::progressBar(screen.frame(), bar, progress);
+    return;
+  }
+
   // CHECK_WIFI / LOADING (and the brief WifiSelectionActivity handoff state).
   screen.centeredText(statusMessage.c_str(), centered);
 }
@@ -435,10 +477,10 @@ void RssArticleListActivity::fetchArticles() {
   // feed so they can never leak into this feed's "Continue with..." chain
   // (see the class comment). Recreated even when empty, so it's always in
   // sync with whatever this fetch produced.
-  if (Storage.exists(RSS_ARTICLES_DIR)) {
-    Storage.removeDir(RSS_ARTICLES_DIR);
+  if (Storage.exists(RssArticlePaths::ARTICLES_DIR)) {
+    Storage.removeDir(RssArticlePaths::ARTICLES_DIR);
   }
-  Storage.mkdir(RSS_ARTICLES_DIR);
+  Storage.mkdir(RssArticlePaths::ARTICLES_DIR);
 
   state = articles.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (articles.empty()) errorMessage = tr(STR_RSS_NO_ARTICLES);

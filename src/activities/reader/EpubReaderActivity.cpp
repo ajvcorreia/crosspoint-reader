@@ -45,6 +45,8 @@
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
+#include "util/NextBookFinder.h"
+#include "util/RssArticlePaths.h"
 #include "util/ScreenshotUtil.h"
 
 namespace {
@@ -330,6 +332,19 @@ void EpubReaderActivity::openDictionaryWordSelect() {
                          [this](const ActivityResult&) { requestUpdate(); });
 }
 
+bool EpubReaderActivity::tryAutoAdvanceToNextRssArticle() {
+  if (autoAdvanceChecked) return false;
+  autoAdvanceChecked = true;
+
+  if (FsHelpers::extractFolderPath(epub->getPath()) != RssArticlePaths::ARTICLES_DIR) return false;
+
+  const auto next = NextBookFinder::findNextBooks(epub->getPath(), 1);
+  if (next.empty()) return false;  // last article in the feed -- normal end screen takes over
+
+  activityManager.goToReader(std::string(RssArticlePaths::ARTICLES_DIR) + "/" + next[0]);
+  return true;
+}
+
 void EpubReaderActivity::loop() {
   if (!epub) {
     finish();
@@ -401,6 +416,10 @@ void EpubReaderActivity::loop() {
 
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
   clearEndOfBookOptionsIfNeeded();
+
+  if (atEndOfBook && tryAutoAdvanceToNextRssArticle()) {
+    return;
+  }
 
   if (SETTINGS.removeReadBooksFromRecents) {
     if (atEndOfBook && !recentsEntryRemoved) {

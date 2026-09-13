@@ -45,12 +45,13 @@
  * These EPUBs are scratch output, not library books, but they are written
  * as a shared, feed-ordered folder (one file per article, filenames prefixed
  * with a zero-padded index) rather than to a single fixed path: that is what
- * lets the reader's existing end-of-book "Continue with..." suggestion menu
- * (EndOfBookOptions / NextBookFinder, which finds sibling files in the same
- * folder that sort after the current one) chain forward through the feed
- * with no reader-side changes at all. The folder is cleared and repopulated
- * on every successful fetchArticles(), so a stale previous feed's articles
- * never leak into the current one's chain.
+ * lets NextBookFinder (a folder scan for sibling files that sort after the
+ * current one) find the next article at end-of-book. EpubReaderActivity
+ * recognizes this specific folder (RssArticlePaths::ARTICLES_DIR) to jump
+ * straight to that next article instead of showing the reader's usual
+ * "Continue with..." choice -- see its own comment for why. The folder is
+ * cleared and repopulated on every successful fetchArticles(), so a stale
+ * previous feed's articles never leak into the current one's chain.
  *
  * Tapping an article writes it AND every article after it in the feed (not
  * just a short lookahead), each with its hero image embedded if it has one,
@@ -85,6 +86,12 @@ class RssArticleListActivity final : public Activity, private UiAppHost {
   int selectorIndex = 0;
   std::string errorMessage;
   std::string statusMessage;
+
+  // Progress for the "Preparing articles..." LOADING screen in
+  // activateSelected(); prepareTotal == 0 means "not that kind of LOADING"
+  // (e.g. the Wi-Fi-check/feed-fetch LOADING screens, which show no bar).
+  size_t prepareProgress = 0;
+  size_t prepareTotal = 0;
 
   // Copied at construction, same rationale as OpdsBookBrowserActivity's own
   // OpdsServer member: safe even if the store changes while this is open.

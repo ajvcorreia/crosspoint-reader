@@ -53,6 +53,11 @@ class EpubReaderActivity final : public ReaderActivity {
   bool recentsEntryRemoved = false;
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
+  // Set the first time tryAutoAdvanceToNextRssArticle() runs for this book,
+  // regardless of outcome, so a book with nothing to advance to (the last
+  // article in a feed, or an ordinary library book) doesn't re-scan its
+  // folder on every remaining tick at the end screen.
+  bool autoAdvanceChecked = false;
 
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
@@ -138,6 +143,14 @@ class EpubReaderActivity final : public ReaderActivity {
   void discardOverlayPage();
   void handleOverlayInput();
   void renderOverlay();
+  // RSS-generated articles (see RssArticleListActivity) skip the reader's
+  // usual end-of-book "Continue with..." choice and jump straight to the
+  // next one -- reading through a feed has exactly one meaningful "next",
+  // so asking adds a step without adding a real choice. Gated on the book's
+  // folder (RssArticlePaths::ARTICLES_DIR), so ordinary library reading is
+  // completely unaffected. Returns true if it navigated away (the caller
+  // must stop touching this activity's state immediately after).
+  bool tryAutoAdvanceToNextRssArticle();
   std::string currentChapterTitle() const;
   // Text panel rows (font, size, line spacing, alignment, focus reading).
   std::string textRowName(int row) const;
