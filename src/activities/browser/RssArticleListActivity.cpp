@@ -10,14 +10,20 @@
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "network/HttpDownloader.h"
+#include "util/RssArticleEpubWriter.h"
 
 namespace fui = freeink::ui;
 
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
+// Scratch output, not a library book: overwritten by whichever article was
+// opened most recently. See the class comment on why a fixed single path is
+// fine here (goToReader() replaces the whole activity stack either way).
+constexpr const char* ARTICLE_EPUB_PATH = "/.crosspoint/rss_article.epub";
 }  // namespace
 
 RssArticleListActivity::RssArticleListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, RssFeed feed)
@@ -58,8 +64,18 @@ void RssArticleListActivity::onExit() {
 
 void RssArticleListActivity::activateSelected() {
   if (articles.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(articles.size())) return;
-  // Opening an article requires assembling a minimal EPUB from its content
-  // (a later phase); there is nothing to open yet.
+
+  const auto& article = articles[static_cast<size_t>(selectorIndex)];
+  if (!RssArticleEpubWriter::write(article, ARTICLE_EPUB_PATH)) {
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
+    requestUpdate();
+    return;
+  }
+
+  // Replaces the whole activity stack, same as opening any other book --
+  // see the class comment on why that's the right behavior here.
+  activityManager.goToReader(ARTICLE_EPUB_PATH);
 }
 
 void RssArticleListActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
@@ -67,7 +83,7 @@ void RssArticleListActivity::onRowEvent(const fui::ActionEvent& event, void* use
   if (self->state != BrowserState::BROWSING) return;
   if (event.value < 0 || event.value >= static_cast<int16_t>(self->articles.size())) return;
   self->selectorIndex = event.value;
-  // The tapped row leaves the screen either way once opening is implemented;
+  // The tapped row leaves the screen either way (reader or an error screen);
   // a lingering tap flash would gray an unrelated row on the next list.
   self->app.clearTapFlash();
   self->activateSelected();

@@ -34,9 +34,15 @@
  * return to. Wi-Fi is simply disconnected; any resulting heap fragmentation
  * is a Phase 8 (polish) concern if it proves to matter in practice.
  *
- * Selecting an article is still a no-op in this phase: opening one requires
- * assembling a minimal EPUB from its content (a later phase), so there is
- * nothing to open yet.
+ * Selecting an article assembles a minimal, text-only EPUB from its content
+ * (RssArticleEpubWriter, backed by the from-scratch STORED-only ZipWriter --
+ * ZipFile only reads) and opens it via the normal reader, the same way any
+ * other book is opened. That EPUB is scratch output, not a library book: it
+ * is written to a single fixed path and overwritten by the next article
+ * opened, and opening it goes through ActivityManager::goToReader(), which
+ * replaces the whole activity stack -- so Back from the reader lands on
+ * Home, exactly like opening any book from the file browser, not back on
+ * this list.
  */
 class RssArticleListActivity final : public Activity, private UiAppHost {
  public:

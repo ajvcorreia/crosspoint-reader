@@ -64,3 +64,5 @@ add_subdirectory(fs_helpers)
 
 add_subdirectory(absolute_grayscale)
 add_subdirectory(rss_parser)
+add_subdirectory(zip_writer)
+add_subdirectory(rss_article_epub_writer)
