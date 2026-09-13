@@ -86,9 +86,11 @@ namespace {
 using RssArticleEpubWriter::internal::htmlToParagraphs;
 using RssArticleEpubWriter::internal::xmlEscape;
 
-std::string buildChapterBody(const RssArticle& article, const std::string& escapedTitle) {
+std::string buildChapterBody(const RssArticle& article, const std::string& escapedTitle,
+                             const std::string& imageHref) {
   std::string body;
   body += "<h1>" + escapedTitle + "</h1>\n";
+  if (!imageHref.empty()) body += "<p><img src=\"" + imageHref + "\" alt=\"\"/></p>\n";
 
   std::string byline;
   if (!article.author.empty()) byline += article.author;
@@ -107,7 +109,7 @@ std::string buildChapterBody(const RssArticle& article, const std::string& escap
   return body;
 }
 
-std::string buildContentOpf(const std::string& escapedTitle) {
+std::string buildContentOpf(const std::string& escapedTitle, const std::string& imageHref, const bool imageIsPng) {
   std::string opf;
   opf += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
   opf += "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"uid\">\n";
@@ -119,6 +121,10 @@ std::string buildContentOpf(const std::string& escapedTitle) {
   opf += "  <manifest>\n";
   opf += "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n";
   opf += "    <item id=\"chapter1\" href=\"chapter1.xhtml\" media-type=\"application/xhtml+xml\"/>\n";
+  if (!imageHref.empty()) {
+    opf += "    <item id=\"hero-image\" href=\"" + imageHref + "\" media-type=\"" +
+           (imageIsPng ? "image/png" : "image/jpeg") + "\"/>\n";
+  }
   opf += "  </manifest>\n";
   opf += "  <spine>\n";
   opf += "    <itemref idref=\"chapter1\"/>\n";
@@ -167,7 +173,8 @@ constexpr const char* CONTAINER_XML =
 
 }  // namespace
 
-bool RssArticleEpubWriter::write(const RssArticle& article, const std::string& destPath) {
+bool RssArticleEpubWriter::write(const RssArticle& article, const std::string& destPath, const std::string& imagePath,
+                                 const bool imageIsPng) {
   // Mirrors PersistableStoreBase::writeDocToFile's own mkdir-before-write:
   // called unconditionally and its result ignored -- the directory almost
   // always exists already (OPDS/RSS/settings all create it first), and
@@ -178,14 +185,19 @@ bool RssArticleEpubWriter::write(const RssArticle& article, const std::string& d
   }
 
   const std::string escapedTitle = xmlEscape(article.title.empty() ? article.link : article.title);
+  const std::string imageHref = imagePath.empty() ? "" : std::string("images/hero.") + (imageIsPng ? "png" : "jpg");
 
   ZipWriter zip(destPath);
   bool ok = zip.open();
   ok = ok && zip.addEntry("mimetype", "application/epub+zip");
   ok = ok && zip.addEntry("META-INF/container.xml", CONTAINER_XML);
-  ok = ok && zip.addEntry("OEBPS/content.opf", buildContentOpf(escapedTitle));
+  if (ok && !imageHref.empty()) {
+    ok = zip.addEntryFromFile("OEBPS/" + imageHref, imagePath);
+  }
+  ok = ok && zip.addEntry("OEBPS/content.opf", buildContentOpf(escapedTitle, imageHref, imageIsPng));
   ok = ok && zip.addEntry("OEBPS/nav.xhtml", buildNavXhtml(escapedTitle));
-  ok = ok && zip.addEntry("OEBPS/chapter1.xhtml", buildChapter1Xhtml(buildChapterBody(article, escapedTitle)));
+  ok = ok && zip.addEntry("OEBPS/chapter1.xhtml",
+                          buildChapter1Xhtml(buildChapterBody(article, escapedTitle, imageHref)));
   ok = zip.close() && ok;
 
   if (!ok) {

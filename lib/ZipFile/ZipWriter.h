@@ -39,6 +39,15 @@ class ZipWriter {
     return addEntry(name, reinterpret_cast<const uint8_t*>(content.data()), content.size());
   }
 
+  // Appends one STORED entry by streaming sourceFilePath's contents through
+  // a small fixed-size buffer, rather than requiring the caller to hold the
+  // whole file in memory first (as the addEntry() overloads above do) --
+  // for entries too large to comfortably build as an in-memory std::string,
+  // like a downloaded image. The ZIP local file header format requires the
+  // CRC-32 and size up front, before the entry's data bytes, so this reads
+  // sourceFilePath twice: once to compute them, once to copy the bytes.
+  bool addEntryFromFile(const std::string& name, const std::string& sourceFilePath);
+
   // Writes the central directory and end-of-central-directory records and
   // closes the file. Returns false if this or any prior addEntry() failed;
   // the caller should discard/remove the (partial) file in that case.

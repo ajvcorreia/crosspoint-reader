@@ -34,7 +34,7 @@
  * return to. Wi-Fi is simply disconnected; any resulting heap fragmentation
  * is a Phase 8 (polish) concern if it proves to matter in practice.
  *
- * Selecting an article assembles a minimal, text-only EPUB from its content
+ * Selecting an article assembles a minimal EPUB from its content
  * (RssArticleEpubWriter, backed by the from-scratch STORED-only ZipWriter --
  * ZipFile only reads) and opens it via the normal reader, the same way any
  * other book is opened. Opening it goes through ActivityManager::goToReader(),
@@ -53,6 +53,15 @@
  * never leak into the current one's chain. Tapping an article (re)writes it
  * plus a short lookahead (EndOfBookOptions::MAX_SUGGESTIONS articles ahead)
  * so those sibling files already exist by the time the reader looks for them.
+ *
+ * Only the explicitly tapped article's hero image (article.imageUrl) is
+ * downloaded and embedded -- lookahead articles stay text-only, since eagerly
+ * fetching images for several articles the user hasn't asked to read yet
+ * would make every tap noticeably slower for no benefit if they never
+ * continue that far. That means an article reached via "Continue with..."
+ * (rather than tapped directly from this list) currently opens without its
+ * image; a known, deliberate limit of combining eager-lookahead chaining
+ * with per-article image embedding, not a bug.
  */
 class RssArticleListActivity final : public Activity, private UiAppHost {
  public:

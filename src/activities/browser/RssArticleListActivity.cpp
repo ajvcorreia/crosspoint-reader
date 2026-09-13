@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <utility>
 
 #include "MappedInputManager.h"
@@ -28,6 +29,65 @@ constexpr fui::ActionId ACTION_ROW = 1;
 // Scratch output, not a library book -- see the class comment on why this is
 // a shared, feed-ordered folder rather than a single fixed path.
 constexpr const char* RSS_ARTICLES_DIR = "/.crosspoint/rss_articles";
+
+constexpr const char* IMAGE_TEMP_PATH = "/.crosspoint/rss_image.tmp";
+// A single article's hero image, not a whole gallery -- 2MB comfortably
+// covers a real-world article photo while bounding worst-case SD/network
+// time for a pathological URL.
+constexpr size_t MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+
+// Downloads imageUrl (if it looks like an absolute http(s) URL -- relative
+// URLs would need the feed's base URL to resolve and are out of scope for
+// now) to a shared temp path and sniffs its format via magic bytes, since
+// the reader's own image pipeline only decodes JPEG and PNG (see
+// ImageDecoderFactory) and a URL's own extension (if any) can't be trusted.
+// Returns the temp path on success (isPng set accordingly) or "" on any
+// failure -- low heap, a failed/oversized download, or an unsupported/
+// non-image response (a common failure mode: an HTML error page served
+// with a 200 status). All failures are non-fatal to the caller, which
+// falls back to a text-only article.
+std::string downloadArticleImage(const std::string& imageUrl, bool& isPng) {
+  if (imageUrl.rfind("http://", 0) != 0 && imageUrl.rfind("https://", 0) != 0) {
+    return "";
+  }
+
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_DBG("RSS", "Skipping article image: low heap");
+    return "";
+  }
+
+  bool cancelFlag = false;
+  const auto progress = [&cancelFlag](const size_t downloaded, const size_t) {
+    if (downloaded > MAX_IMAGE_BYTES) cancelFlag = true;
+  };
+  const auto result = HttpDownloader::downloadToFile(imageUrl, IMAGE_TEMP_PATH, progress, &cancelFlag);
+  if (result != HttpDownloader::OK) {
+    Storage.remove(IMAGE_TEMP_PATH);
+    return "";
+  }
+
+  HalFile file = Storage.open(IMAGE_TEMP_PATH);
+  if (!file) {
+    Storage.remove(IMAGE_TEMP_PATH);
+    return "";
+  }
+  uint8_t header[8] = {0};
+  const int bytesRead = file.read(header, sizeof(header));
+  file.close();
+
+  static constexpr uint8_t PNG_SIGNATURE[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+  if (bytesRead >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF) {
+    isPng = false;
+  } else if (bytesRead == 8 && std::equal(std::begin(PNG_SIGNATURE), std::end(PNG_SIGNATURE), header)) {
+    isPng = true;
+  } else {
+    Storage.remove(IMAGE_TEMP_PATH);
+    return "";
+  }
+
+  return IMAGE_TEMP_PATH;
+}
 }  // namespace
 
 RssArticleListActivity::RssArticleListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, RssFeed feed)
@@ -89,12 +149,30 @@ void RssArticleListActivity::activateSelected() {
   // reader reaches the end of this one. Unconditionally overwritten rather
   // than tracked: a handful of small re-writes per tap is simpler than
   // bookkeeping which indices are already current, and cheap either way.
+  //
+  // Only the tapped article's image is fetched: a hero-image download can
+  // take a couple of seconds, and paying that cost for up to
+  // MAX_SUGGESTIONS lookahead articles the user hasn't asked to read yet
+  // would make every tap noticeably slower for no benefit if they never
+  // continue that far. Chained-to articles (opened via "Continue with...")
+  // stay text-only for now -- a known, deliberate limit of combining
+  // eager-lookahead chaining with per-article image embedding.
   const auto start = static_cast<size_t>(selectorIndex);
   const size_t end = std::min(articles.size(), start + 1 + EndOfBookOptions::MAX_SUGGESTIONS);
   std::string openPath;
   for (size_t i = start; i < end; i++) {
     const std::string path = articleEpubPath(i);
-    if (!RssArticleEpubWriter::write(articles[i], path)) {
+
+    std::string imagePath;
+    bool imageIsPng = false;
+    if (i == start && !articles[i].imageUrl.empty()) {
+      imagePath = downloadArticleImage(articles[i].imageUrl, imageIsPng);
+    }
+
+    const bool written = RssArticleEpubWriter::write(articles[i], path, imagePath, imageIsPng);
+    if (!imagePath.empty()) Storage.remove(imagePath.c_str());
+
+    if (!written) {
       if (i == start) {
         state = BrowserState::ERROR;
         errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);

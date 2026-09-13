@@ -31,19 +31,46 @@ constexpr std::array<uint32_t, 256> makeCrc32Table() {
 }
 constexpr std::array<uint32_t, 256> kCrc32Table = makeCrc32Table();
 
-uint32_t crc32(const uint8_t* data, const size_t len) {
-  uint32_t crc = 0xFFFFFFFFu;
+// Folds one more chunk into a running CRC (seed with 0xFFFFFFFF, XOR the
+// final result with 0xFFFFFFFF once all chunks are in) -- lets
+// addEntryFromFile() compute a whole file's CRC across several small reads
+// instead of needing it all in memory at once, unlike the single-shot
+// crc32() below.
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, const size_t len) {
   for (size_t i = 0; i < len; i++) {
     crc = kCrc32Table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
   }
-  return crc ^ 0xFFFFFFFFu;
+  return crc;
 }
+
+uint32_t crc32(const uint8_t* data, const size_t len) { return crc32Update(0xFFFFFFFFu, data, len) ^ 0xFFFFFFFFu; }
 
 bool writeU16(HalFile& file, const uint16_t v) { return file.write(reinterpret_cast<const uint8_t*>(&v), 2) == 2; }
 bool writeU32(HalFile& file, const uint32_t v) { return file.write(reinterpret_cast<const uint8_t*>(&v), 4) == 4; }
 bool writeBytes(HalFile& file, const std::string& s) {
   return s.empty() || file.write(reinterpret_cast<const uint8_t*>(s.data()), s.size()) == s.size();
 }
+
+// Shared by addEntry() and addEntryFromFile(): every local file header is
+// identical apart from the name/crc/size fields.
+bool writeLocalHeader(HalFile& file, const std::string& name, const uint32_t crc, const uint32_t size32) {
+  bool ok = true;
+  ok &= writeU32(file, LOCAL_FILE_HEADER_SIG);
+  ok &= writeU16(file, ZIP_VERSION);
+  ok &= writeU16(file, 0);  // general-purpose flags
+  ok &= writeU16(file, METHOD_STORED);
+  ok &= writeU16(file, 0);  // mod time
+  ok &= writeU16(file, DOS_DATE_EPOCH);
+  ok &= writeU32(file, crc);
+  ok &= writeU32(file, size32);  // compressed size == uncompressed size for STORED
+  ok &= writeU32(file, size32);
+  ok &= writeU16(file, static_cast<uint16_t>(name.size()));
+  ok &= writeU16(file, 0);  // extra field length -- required to be 0 for EPUB's "mimetype" entry
+  ok &= writeBytes(file, name);
+  return ok;
+}
+
+constexpr size_t STREAM_CHUNK_SIZE = 2048;
 }  // namespace
 
 ZipWriter::ZipWriter(std::string filePath) : filePath(std::move(filePath)) {}
@@ -72,23 +99,59 @@ bool ZipWriter::addEntry(const std::string& name, const uint8_t* data, const siz
   const uint32_t crc = crc32(data, len);
   const auto size32 = static_cast<uint32_t>(len);
 
-  bool ok = true;
-  ok &= writeU32(file, LOCAL_FILE_HEADER_SIG);
-  ok &= writeU16(file, ZIP_VERSION);
-  ok &= writeU16(file, 0);  // general-purpose flags
-  ok &= writeU16(file, METHOD_STORED);
-  ok &= writeU16(file, 0);  // mod time
-  ok &= writeU16(file, DOS_DATE_EPOCH);
-  ok &= writeU32(file, crc);
-  ok &= writeU32(file, size32);  // compressed size == uncompressed size for STORED
-  ok &= writeU32(file, size32);
-  ok &= writeU16(file, static_cast<uint16_t>(name.size()));
-  ok &= writeU16(file, 0);  // extra field length -- required to be 0 for EPUB's "mimetype" entry
-  ok &= writeBytes(file, name);
+  bool ok = writeLocalHeader(file, name, crc, size32);
   ok &= (len == 0 || file.write(data, len) == len);
 
   if (!ok) {
     LOG_ERR("RSS", "ZipWriter: failed writing entry %s", name.c_str());
+    error = true;
+    return false;
+  }
+
+  entries.push_back({name, crc, size32, offset});
+  return true;
+}
+
+bool ZipWriter::addEntryFromFile(const std::string& name, const std::string& sourceFilePath) {
+  if (error || !file) return false;
+
+  HalFile source = Storage.open(sourceFilePath.c_str());
+  if (!source) {
+    LOG_ERR("RSS", "ZipWriter: failed to open source %s", sourceFilePath.c_str());
+    error = true;
+    return false;
+  }
+
+  // Pass 1: compute the CRC-32 and size a chunk at a time, without ever
+  // holding the whole source file in memory -- see the header comment.
+  uint8_t buffer[STREAM_CHUNK_SIZE];
+  uint32_t crc = 0xFFFFFFFFu;
+  uint32_t size32 = 0;
+  int bytesRead;
+  while ((bytesRead = source.read(buffer, sizeof(buffer))) > 0) {
+    crc = crc32Update(crc, buffer, static_cast<size_t>(bytesRead));
+    size32 += static_cast<uint32_t>(bytesRead);
+  }
+  crc ^= 0xFFFFFFFFu;
+
+  if (!source.seek(0)) {
+    LOG_ERR("RSS", "ZipWriter: failed to rewind source %s", sourceFilePath.c_str());
+    source.close();
+    error = true;
+    return false;
+  }
+
+  const auto offset = static_cast<uint32_t>(file.position());
+  bool ok = writeLocalHeader(file, name, crc, size32);
+
+  // Pass 2: stream the actual bytes straight through to the archive.
+  while (ok && (bytesRead = source.read(buffer, sizeof(buffer))) > 0) {
+    ok = (file.write(buffer, static_cast<size_t>(bytesRead)) == static_cast<size_t>(bytesRead));
+  }
+  source.close();
+
+  if (!ok) {
+    LOG_ERR("RSS", "ZipWriter: failed streaming entry %s from %s", name.c_str(), sourceFilePath.c_str());
     error = true;
     return false;
   }
