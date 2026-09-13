@@ -18,6 +18,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "network/HttpDownloader.h"
+#include "util/BookCacheUtils.h"
 #include "util/RssArticleEpubWriter.h"
 #include "util/TaskWatchdog.h"
 
@@ -115,6 +116,7 @@ void RssArticleListActivity::onEnter() {
   selectorIndex = 0;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
+  statusDetail.clear();
   loadingProgress = 0;
   loadingTotal = 0;
 
@@ -151,6 +153,7 @@ void RssArticleListActivity::activateSelected() {
   // actively about to read, so the cost is never paid for nothing.
   state = BrowserState::LOADING;
   statusMessage = tr(STR_RSS_PREPARING_ARTICLES);
+  statusDetail.clear();
   loadingProgress = 0;
   loadingTotal = articles.size();
   requestUpdate(true);
@@ -167,22 +170,21 @@ void RssArticleListActivity::activateSelected() {
   unsigned long lastProgressUpdateMs = millis();
   for (size_t i = 0; i < articles.size(); i++) {
     const auto& article = articles[i];
-    char titleBuf[160];
-    snprintf(titleBuf, sizeof(titleBuf), "%s", article.title.empty() ? article.link.c_str() : article.title.c_str());
+    // A second status line (statusDetail), not appended onto statusMessage:
+    // "Downloading image for: <title>" routinely doesn't fit on one line on
+    // this hardware, and a title is exactly the kind of text that shouldn't
+    // be silently truncated.
+    statusDetail = article.title.empty() ? article.link : article.title;
 
     std::string imagePath;
     bool imageIsPng = false;
     if (!article.imageUrl.empty()) {
-      char statusBuf[220];
-      snprintf(statusBuf, sizeof(statusBuf), tr(STR_RSS_DOWNLOADING_IMAGE_FORMAT), titleBuf);
-      statusMessage = statusBuf;
+      statusMessage = tr(STR_RSS_DOWNLOADING_IMAGE);
       requestUpdate(true);
       imagePath = downloadArticleImage(article.imageUrl, imageIsPng);
     }
 
-    char statusBuf[220];
-    snprintf(statusBuf, sizeof(statusBuf), tr(STR_RSS_ADDING_ARTICLE_FORMAT), titleBuf);
-    statusMessage = statusBuf;
+    statusMessage = tr(STR_RSS_ADDING_ARTICLE);
 
     const bool added = builder.addArticle(article, imagePath, imageIsPng);
     if (!imagePath.empty()) Storage.remove(imagePath.c_str());
@@ -220,6 +222,16 @@ void RssArticleListActivity::activateSelected() {
     requestUpdate();
     return;
   }
+
+  // FEED_EPUB_PATH is one fixed path reused (fully overwritten) by every
+  // feed and every re-open, but the reader's spine/TOC/CSS metadata cache is
+  // keyed purely by a hash of that path -- it has no idea the file's actual
+  // content just changed. Without this, opening a second feed (or the same
+  // feed after it changed) would silently reuse the previous book's cached
+  // chapters. clearBookCache() also drops the saved reading position for
+  // this path, which is what we want: every regeneration should start fresh
+  // at chapter 1, not resume into a chapter list that no longer matches.
+  clearBookCache(FEED_EPUB_PATH);
 
   // Replaces the whole activity stack, same as opening any other book --
   // see the class comment on why that's the right behavior here. Always
@@ -389,17 +401,22 @@ void RssArticleListActivity::buildStatusScreen(UiScreen& screen) {
 
   if (state == BrowserState::LOADING && loadingTotal > 0) {
     // Either fetchArticles()'s feed-download progress or
-    // activateSelected()'s book-assembly progress: a live status message +
-    // a bar, laid out the same way as OpdsBookBrowserActivity's own
-    // download screen. Whichever set loadingTotal last owns this screen
-    // until it clears it back to 0.
+    // activateSelected()'s book-assembly progress: a live status message
+    // (+ an optional second line, e.g. an article title -- see
+    // statusDetail's own comment) + a bar, laid out the same way as
+    // OpdsBookBrowserActivity's own download screen. Whichever set
+    // loadingTotal last owns this screen until it clears it back to 0.
     const int16_t lh = screen.target().lineHeight(centered.font);
     const int16_t gap = screen.theme().spaceMd;
     const int16_t barH = 16;
-    const int16_t blockH = static_cast<int16_t>(lh + barH + gap);
+    const int16_t textLines = statusDetail.empty() ? 1 : 2;
+    const int16_t blockH = static_cast<int16_t>(lh * textLines + barH + gap);
     const fui::Rect body = screen.body();
     if (body.height > blockH) screen.spacer(static_cast<int16_t>((body.height - blockH) / 2));
     screen.target().text(screen.takeTop(lh, gap), statusMessage.c_str(), centered);
+    if (!statusDetail.empty()) {
+      screen.target().text(screen.takeTop(lh, gap), statusDetail.c_str(), centered);
+    }
 
     const fui::Rect bar = screen.takeTop(barH, gap).inset(fui::Insets{0, 50, 0, 50});
     fui::ProgressBarProps progress;
@@ -435,6 +452,7 @@ void RssArticleListActivity::render(RenderLock&&) {
 
 void RssArticleListActivity::fetchArticles() {
   state = BrowserState::LOADING;
+  statusDetail.clear();
   loadingProgress = 0;
   loadingTotal = 0;
 

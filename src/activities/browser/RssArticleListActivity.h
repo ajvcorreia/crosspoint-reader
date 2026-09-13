@@ -77,6 +77,11 @@ class RssArticleListActivity final : public Activity, private UiAppHost {
   int selectorIndex = 0;
   std::string errorMessage;
   std::string statusMessage;
+  // Optional second status line, shown below statusMessage on the LOADING
+  // screen when set (e.g. an article title, which doesn't fit on the same
+  // line as the "Downloading image for:" label ahead of it). Cleared
+  // whenever a status line doesn't need a companion.
+  std::string statusDetail;
 
   // Progress for whichever LOADING screen is currently active (feed
   // download in fetchArticles(), or assembling the book in
