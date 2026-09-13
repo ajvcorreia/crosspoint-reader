@@ -117,8 +117,15 @@ bool ZipWriter::addEntryFromFile(const std::string& name, const std::string& sou
 
   HalFile source = Storage.open(sourceFilePath.c_str());
   if (!source) {
+    // Unlike every other failure in this class, an unreadable SOURCE does
+    // NOT poison the writer: it says nothing about whether the archive
+    // being built is still healthy, only that this one entry can't be
+    // added. Letting the caller treat this as "skip this entry" rather
+    // than "the whole archive is now unusable" matters once one archive
+    // holds many independently-sourced entries (RssArticleEpubWriter's
+    // FeedBuilder embeds one downloaded image per chapter; a since-removed
+    // or failed temp file for chapter 3 shouldn't cost chapters 4 onward).
     LOG_ERR("RSS", "ZipWriter: failed to open source %s", sourceFilePath.c_str());
-    error = true;
     return false;
   }
 

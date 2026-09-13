@@ -46,10 +46,16 @@ class ZipWriter {
   // like a downloaded image. The ZIP local file header format requires the
   // CRC-32 and size up front, before the entry's data bytes, so this reads
   // sourceFilePath twice: once to compute them, once to copy the bytes.
+  // An unreadable sourceFilePath fails only this one call, unlike every
+  // other failure in this class -- it does not poison later addEntry*()
+  // calls, since it says nothing about whether the archive itself is
+  // still healthy (see the .cpp for why this distinction exists).
   bool addEntryFromFile(const std::string& name, const std::string& sourceFilePath);
 
   // Writes the central directory and end-of-central-directory records and
-  // closes the file. Returns false if this or any prior addEntry() failed;
+  // closes the file. Returns false if this or any prior addEntry()/
+  // addEntryFromFile() write to the archive itself failed (not counting an
+  // addEntryFromFile() that merely couldn't read its source -- see above);
   // the caller should discard/remove the (partial) file in that case.
   bool close();
 

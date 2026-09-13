@@ -19,8 +19,6 @@
 #include "components/UITheme.h"
 #include "network/HttpDownloader.h"
 #include "util/RssArticleEpubWriter.h"
-#include "util/RssArticlePaths.h"
-#include "util/StringUtils.h"
 #include "util/TaskWatchdog.h"
 
 namespace fui = freeink::ui;
@@ -28,17 +26,26 @@ namespace fui = freeink::ui;
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
 
+// Scratch output, not a library book: a single combined EPUB (one chapter
+// per article) for the whole feed, overwritten every time any article in
+// this feed is opened -- see the class comment for why this replaced an
+// earlier one-file-per-article design.
+constexpr const char* FEED_EPUB_PATH = "/.crosspoint/rss_feed.epub";
+constexpr const char* FEED_TEMP_PATH = "/.crosspoint/rss_feed.tmp";
 constexpr const char* IMAGE_TEMP_PATH = "/.crosspoint/rss_image.tmp";
 // A single article's hero image, not a whole gallery -- 2MB comfortably
 // covers a real-world article photo while bounding worst-case SD/network
 // time for a pathological URL.
 constexpr size_t MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
-// Matches OpdsBookBrowserActivity's own DOWNLOAD_PROGRESS_MIN_UPDATE_MS:
-// caps how often activateSelected()'s progress bar redraws, since each
-// redraw is itself a real e-ink refresh that would otherwise add up on a
-// feed with many articles.
-constexpr unsigned long PREPARE_PROGRESS_MIN_UPDATE_MS = 5000;
+// Matches OpdsBookBrowserActivity's own DOWNLOAD_PROGRESS_MIN_UPDATE_MS in
+// spirit: caps how often a LOADING screen's progress bar redraws, since
+// each redraw is itself a real e-ink refresh that would otherwise add up
+// over a long feed fetch or a feed with many articles. Shorter than OPDS's
+// own 5000ms: both of this activity's progress phases are typically faster
+// overall than a multi-MB book download, so a longer floor would often
+// mean the bar never visibly moves at all before the phase finishes.
+constexpr unsigned long PROGRESS_MIN_UPDATE_MS = 1000;
 
 // Downloads imageUrl (if it looks like an absolute http(s) URL -- relative
 // URLs would need the feed's base URL to resolve and are out of scope for
@@ -108,6 +115,8 @@ void RssArticleListActivity::onEnter() {
   selectorIndex = 0;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
+  loadingProgress = 0;
+  loadingTotal = 0;
 
   listNav.reset();
   resetUi();
@@ -130,87 +139,93 @@ void RssArticleListActivity::onExit() {
   }
 }
 
-std::string RssArticleListActivity::articleEpubPath(const size_t index) const {
-  char indexPrefix[4];
-  snprintf(indexPrefix, sizeof(indexPrefix), "%02zu", index);
-
-  const auto& article = articles[index];
-  std::string path = RssArticlePaths::ARTICLES_DIR;
-  path += "/";
-  path += indexPrefix;
-  path += " - ";
-  path += StringUtils::sanitizeFilename(article.title.empty() ? article.link : article.title);
-  path += ".epub";
-  return path;
-}
-
 void RssArticleListActivity::activateSelected() {
   if (articles.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(articles.size())) return;
 
-  // Writes the tapped article and every article after it (see the class
-  // comment on why this covers the whole remaining feed, not a short
-  // lookahead, and why that's an explicit experiment rather than a settled
-  // design). Unconditionally overwritten rather than tracked: simpler than
-  // bookkeeping which indices are already current, and still cheap per
-  // article even if some of that work is redundant across taps.
-  //
-  // This can take a while for a feed with many articles, each downloading
-  // its own image -- shown as a LOADING screen with a progress bar rather
-  // than left silent so it doesn't look like the device has frozen. Redraws
-  // are time-throttled (PREPARE_PROGRESS_MIN_UPDATE_MS), same reasoning as
-  // OpdsBookBrowserActivity's own download progress: an e-ink refresh per
-  // article would itself add up to real time on a feed with many articles.
-  const auto start = static_cast<size_t>(selectorIndex);
+  // Every article in the feed goes into the one combined book regardless of
+  // which row was tapped (see the class comment) -- so which row triggered
+  // this only matters for which chapter the user probably wants to land on
+  // first, not for what gets built. Rebuilt unconditionally rather than
+  // reused across taps: simpler than tracking whether the existing file is
+  // still current, and this activity only reaches here when the user is
+  // actively about to read, so the cost is never paid for nothing.
   state = BrowserState::LOADING;
   statusMessage = tr(STR_RSS_PREPARING_ARTICLES);
-  prepareProgress = 0;
-  prepareTotal = articles.size() - start;
+  loadingProgress = 0;
+  loadingTotal = articles.size();
   requestUpdate(true);
 
-  std::string openPath;
+  RssArticleEpubWriter::FeedBuilder builder;
+  if (!builder.begin(FEED_EPUB_PATH, feed.name)) {
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
+    loadingTotal = 0;
+    requestUpdate();
+    return;
+  }
+
   unsigned long lastProgressUpdateMs = millis();
-  for (size_t i = start; i < articles.size(); i++) {
-    const std::string path = articleEpubPath(i);
+  for (size_t i = 0; i < articles.size(); i++) {
+    const auto& article = articles[i];
+    char titleBuf[160];
+    snprintf(titleBuf, sizeof(titleBuf), "%s", article.title.empty() ? article.link.c_str() : article.title.c_str());
 
     std::string imagePath;
     bool imageIsPng = false;
-    if (!articles[i].imageUrl.empty()) {
-      imagePath = downloadArticleImage(articles[i].imageUrl, imageIsPng);
+    if (!article.imageUrl.empty()) {
+      char statusBuf[220];
+      snprintf(statusBuf, sizeof(statusBuf), tr(STR_RSS_DOWNLOADING_IMAGE_FORMAT), titleBuf);
+      statusMessage = statusBuf;
+      requestUpdate(true);
+      imagePath = downloadArticleImage(article.imageUrl, imageIsPng);
     }
 
-    const bool written = RssArticleEpubWriter::write(articles[i], path, imagePath, imageIsPng);
+    char statusBuf[220];
+    snprintf(statusBuf, sizeof(statusBuf), tr(STR_RSS_ADDING_ARTICLE_FORMAT), titleBuf);
+    statusMessage = statusBuf;
+
+    const bool added = builder.addArticle(article, imagePath, imageIsPng);
     if (!imagePath.empty()) Storage.remove(imagePath.c_str());
 
-    if (!written) {
-      if (i == start) {
-        state = BrowserState::ERROR;
-        errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
-        prepareTotal = 0;
-        requestUpdate();
-        return;
-      }
-      // One article in the batch failed (e.g. a transient network hiccup);
-      // keep going for the rest rather than abandoning the whole feed.
-    } else if (i == start) {
-      openPath = path;
+    if (!added) {
+      // Only a genuine archive-write failure reaches here (a missing/bad
+      // image degrades that one chapter to text-only instead, inside
+      // addArticle()) -- the archive itself is no longer trustworthy once
+      // this happens, so stop rather than keep downloading images for
+      // chapters that can no longer be written anyway.
+      state = BrowserState::ERROR;
+      errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
+      loadingTotal = 0;
+      requestUpdate();
+      return;
     }
 
-    prepareProgress = i - start + 1;
+    loadingProgress = i + 1;
     const unsigned long now = millis();
-    if (prepareProgress == prepareTotal || now - lastProgressUpdateMs >= PREPARE_PROGRESS_MIN_UPDATE_MS) {
+    if (loadingProgress == loadingTotal || now - lastProgressUpdateMs >= PROGRESS_MIN_UPDATE_MS) {
       lastProgressUpdateMs = now;
       requestUpdate(true);
     }
 
-    // This loop can run long (network fetch per article); make sure it
+    // This loop can run long (a network fetch per article); make sure it
     // never trips the task watchdog on a feed with many articles.
     resetTaskWatchdogIfSubscribed();
   }
 
-  prepareTotal = 0;
+  loadingTotal = 0;
+
+  if (!builder.finish()) {
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
+    requestUpdate();
+    return;
+  }
+
   // Replaces the whole activity stack, same as opening any other book --
-  // see the class comment on why that's the right behavior here.
-  activityManager.goToReader(openPath);
+  // see the class comment on why that's the right behavior here. Always
+  // opens at the book's own saved position (chapter 1, the first time), not
+  // necessarily the tapped row's chapter -- see the class comment.
+  activityManager.goToReader(FEED_EPUB_PATH);
 }
 
 void RssArticleListActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
@@ -232,9 +247,8 @@ void RssArticleListActivity::loop() {
     int ty = 0;
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(tx, ty)) {
       if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-        state = BrowserState::LOADING;
-        statusMessage = tr(STR_LOADING);
-        requestUpdate();
+        // fetchArticles() sets its own state/statusMessage/progress and
+        // renders immediately -- no need to pre-set a generic one here.
         fetchArticles();
       } else {
         launchWifiSelection();
@@ -373,10 +387,12 @@ void RssArticleListActivity::buildStatusScreen(UiScreen& screen) {
     return;
   }
 
-  if (state == BrowserState::LOADING && prepareTotal > 0) {
-    // activateSelected()'s "Preparing articles..." screen: message + a
-    // progress bar, laid out the same way as OpdsBookBrowserActivity's own
-    // download screen.
+  if (state == BrowserState::LOADING && loadingTotal > 0) {
+    // Either fetchArticles()'s feed-download progress or
+    // activateSelected()'s book-assembly progress: a live status message +
+    // a bar, laid out the same way as OpdsBookBrowserActivity's own
+    // download screen. Whichever set loadingTotal last owns this screen
+    // until it clears it back to 0.
     const int16_t lh = screen.target().lineHeight(centered.font);
     const int16_t gap = screen.theme().spaceMd;
     const int16_t barH = 16;
@@ -387,8 +403,8 @@ void RssArticleListActivity::buildStatusScreen(UiScreen& screen) {
 
     const fui::Rect bar = screen.takeTop(barH, gap).inset(fui::Insets{0, 50, 0, 50});
     fui::ProgressBarProps progress;
-    progress.value = static_cast<int32_t>(prepareProgress);
-    progress.max = static_cast<int32_t>(prepareTotal);
+    progress.value = static_cast<int32_t>(loadingProgress);
+    progress.max = static_cast<int32_t>(loadingTotal);
     progress.border = fui::Paint::solid(fui::Color::Black);
     progress.borderWidth = 1;
     fui::progressBar(screen.frame(), bar, progress);
@@ -418,6 +434,10 @@ void RssArticleListActivity::render(RenderLock&&) {
 }
 
 void RssArticleListActivity::fetchArticles() {
+  state = BrowserState::LOADING;
+  loadingProgress = 0;
+  loadingTotal = 0;
+
   if (feed.url.empty()) {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_RSS_NO_FEED_URL);
@@ -426,6 +446,12 @@ void RssArticleListActivity::fetchArticles() {
   }
 
   LOG_DBG("RSS", "Fetching: %s", feed.url.c_str());
+
+  char connectingBuf[200];
+  snprintf(connectingBuf, sizeof(connectingBuf), tr(STR_RSS_CONNECTING_FORMAT),
+           feed.name.empty() ? feed.url.c_str() : feed.name.c_str());
+  statusMessage = connectingBuf;
+  requestUpdate(true);
 
   // Same pre-flight floor OpdsBookBrowserActivity applies before a TLS
   // download: below this a session (or its ~17KB record buffer) fails
@@ -439,21 +465,43 @@ void RssArticleListActivity::fetchArticles() {
     return;
   }
 
-  RssParser parser;
-  const bool fetched = HttpDownloader::fetchUrl(feed.url, [&parser](const uint8_t* data, const size_t len) {
-    parser.write(data, len);
-    return true;  // RssParser has no natural "abort mid-stream" signal; never abort here
-  });
-  parser.flush();
+  // Downloaded to a temp file (rather than streamed straight into the
+  // parser, as an earlier phase did) specifically so the download has a
+  // real (downloaded, total) to show a progress bar from --
+  // HttpDownloader's plain streaming fetchUrl() only ever hands over chunk
+  // sizes, with no Content-Length visibility.
+  statusMessage = tr(STR_RSS_DOWNLOADING_FEED);
+  unsigned long lastProgressUpdateMs = millis();
+  const auto progress = [this, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
+    loadingProgress = downloaded;
+    loadingTotal = total;
+    const unsigned long now = millis();
+    if (now - lastProgressUpdateMs >= PROGRESS_MIN_UPDATE_MS) {
+      lastProgressUpdateMs = now;
+      requestUpdate(true);
+    }
+  };
+  const auto result = HttpDownloader::downloadToFile(feed.url, FEED_TEMP_PATH, progress);
 
-  if (!fetched) {
+  if (result != HttpDownloader::OK) {
+    Storage.remove(FEED_TEMP_PATH);
     state = BrowserState::ERROR;
     errorMessage = tr(STR_FETCH_FEED_FAILED);
+    loadingTotal = 0;
     requestUpdate();
     return;
   }
 
-  if (!parser) {
+  statusMessage = tr(STR_RSS_PARSING_ARTICLES);
+  loadingTotal = 0;  // article count, not byte count, from here -- no bar for this quick step
+  requestUpdate(true);
+
+  RssParser parser;
+  const bool streamed = Storage.readFileToStream(FEED_TEMP_PATH, parser, 2048);
+  parser.flush();
+  Storage.remove(FEED_TEMP_PATH);
+
+  if (!streamed || !parser) {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_PARSE_FEED_FAILED);
     requestUpdate();
@@ -472,15 +520,6 @@ void RssArticleListActivity::fetchArticles() {
   if (feedTruncated) {
     LOG_INF("RSS", "Feed truncated to fit memory");
   }
-
-  // Fresh feed load: drop any per-article EPUBs left over from a previous
-  // feed so they can never leak into this feed's "Continue with..." chain
-  // (see the class comment). Recreated even when empty, so it's always in
-  // sync with whatever this fetch produced.
-  if (Storage.exists(RssArticlePaths::ARTICLES_DIR)) {
-    Storage.removeDir(RssArticlePaths::ARTICLES_DIR);
-  }
-  Storage.mkdir(RssArticlePaths::ARTICLES_DIR);
 
   state = articles.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (articles.empty()) errorMessage = tr(STR_RSS_NO_ARTICLES);
@@ -513,9 +552,8 @@ void RssArticleListActivity::rebuildRowItems() {
 
 void RssArticleListActivity::checkAndConnectWifi() {
   if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-    state = BrowserState::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate();
+    // fetchArticles() sets its own state/statusMessage/progress and
+    // renders immediately -- no need to pre-set a generic one here.
     fetchArticles();
     return;
   }
@@ -532,9 +570,8 @@ void RssArticleListActivity::launchWifiSelection() {
 
 void RssArticleListActivity::onWifiSelectionComplete(const bool connected) {
   if (connected) {
-    state = BrowserState::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate(true);
+    // fetchArticles() sets its own state/statusMessage/progress and
+    // renders immediately -- no need to pre-set a generic one here.
     fetchArticles();
   } else {
     state = BrowserState::ERROR;

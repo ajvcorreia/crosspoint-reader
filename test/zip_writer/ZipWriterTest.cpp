@@ -233,6 +233,30 @@ TEST(ZipWriterTest, MixesAddEntryAndAddEntryFromFile) {
   std::remove(zipPath.c_str());
 }
 
+TEST(ZipWriterTest, AddEntryFromFileMissingSourceDoesNotPoisonWriter) {
+  const std::string zipPath = tempPath("crosspoint_ziptest_missing_source.bin");
+  ZipWriter writer(zipPath);
+  ASSERT_TRUE(writer.open());
+  // A nonexistent source fails only that one entry -- unlike every other
+  // failure mode, it must not poison the writer for entries that follow.
+  EXPECT_FALSE(writer.addEntryFromFile("missing.jpg", "Z:/definitely/not/a/real/path/x.jpg"));
+  EXPECT_TRUE(writer.addEntry("still-works.txt", std::string("ok")));
+  ASSERT_TRUE(writer.close());
+
+  std::ifstream f(zipPath, std::ios::binary | std::ios::ate);
+  ASSERT_TRUE(f.is_open());
+  const auto fileSize = static_cast<size_t>(f.tellg());
+  f.seekg(static_cast<std::streamoff>(fileSize) - 22);
+  ASSERT_EQ(readU32(f), 0x06054b50u);
+  readU16(f);
+  readU16(f);
+  EXPECT_EQ(readU16(f), 1);  // only the one successfully-added entry
+  EXPECT_EQ(readU16(f), 1);
+
+  f.close();
+  std::remove(zipPath.c_str());
+}
+
 TEST(ZipWriterTest, MultipleEntriesPreserveOrderAndOffsets) {
   const std::string path = tempPath("crosspoint_ziptest_multi.bin");
   ZipWriter writer(path);

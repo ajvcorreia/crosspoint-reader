@@ -34,35 +34,26 @@
  * return to. Wi-Fi is simply disconnected; any resulting heap fragmentation
  * is a Phase 8 (polish) concern if it proves to matter in practice.
  *
- * Selecting an article assembles a minimal EPUB from its content
- * (RssArticleEpubWriter, backed by the from-scratch STORED-only ZipWriter --
- * ZipFile only reads) and opens it via the normal reader, the same way any
- * other book is opened. Opening it goes through ActivityManager::goToReader(),
- * which replaces the whole activity stack -- so Back from the reader lands
- * on Home, exactly like opening any book from the file browser, not back on
- * this list.
+ * Selecting any article assembles a single EPUB containing every article in
+ * the feed as its own chapter (RssArticleEpubWriter::FeedBuilder, backed by
+ * the from-scratch STORED-only ZipWriter -- ZipFile only reads), each with
+ * its hero image embedded if it has one, and opens it via the normal
+ * reader -- the same way any other book is opened. This is a single fixed
+ * scratch path, not a library book, overwritten every time any article in
+ * this feed is opened (so a fresh fetchArticles() always produces a fully
+ * current book; nothing tracks which articles changed since last time).
+ * Reading forward through the feed, and jumping to any specific article,
+ * are then just the reader's own ordinary chapter navigation (turning the
+ * page past a chapter's last page, or its Contents/TOC panel) -- unlike an
+ * earlier one-file-per-article design this replaced, nothing here needs
+ * the reader to know anything RSS-specific to make that work.
  *
- * These EPUBs are scratch output, not library books, but they are written
- * as a shared, feed-ordered folder (one file per article, filenames prefixed
- * with a zero-padded index) rather than to a single fixed path: that is what
- * lets NextBookFinder (a folder scan for sibling files that sort after the
- * current one) find the next article at end-of-book. EpubReaderActivity
- * recognizes this specific folder (RssArticlePaths::ARTICLES_DIR) to jump
- * straight to that next article instead of showing the reader's usual
- * "Continue with..." choice -- see its own comment for why. The folder is
- * cleared and repopulated on every successful fetchArticles(), so a stale
- * previous feed's articles never leak into the current one's chain.
- *
- * Tapping an article writes it AND every article after it in the feed (not
- * just a short lookahead), each with its hero image embedded if it has one,
- * so "Continue with..." can walk all the way to the end of the feed with
- * images throughout, not just a few articles ahead. This is a deliberate
- * experiment, called out explicitly because it trades away the previous
- * design's responsiveness: for a feed with many articles this can mean many
- * sequential image downloads before the tapped article even opens, which is
- * why a LOADING screen covers activateSelected()'s write loop. If that proves
- * too slow in practice, the fix is to cut the loop back to a short lookahead
- * again (as it was before) rather than the whole remaining feed.
+ * Assembling the whole feed (including downloading every article's image)
+ * happens synchronously in activateSelected() before the book is opened,
+ * covered by a LOADING screen with a progress bar and a live "here's what's
+ * happening right now" status line -- for a feed with many articles this
+ * can take a while, so the point of that screen is making the wait
+ * legible, not eliminating it.
  */
 class RssArticleListActivity final : public Activity, private UiAppHost {
  public:
@@ -87,11 +78,15 @@ class RssArticleListActivity final : public Activity, private UiAppHost {
   std::string errorMessage;
   std::string statusMessage;
 
-  // Progress for the "Preparing articles..." LOADING screen in
-  // activateSelected(); prepareTotal == 0 means "not that kind of LOADING"
-  // (e.g. the Wi-Fi-check/feed-fetch LOADING screens, which show no bar).
-  size_t prepareProgress = 0;
-  size_t prepareTotal = 0;
+  // Progress for whichever LOADING screen is currently active (feed
+  // download in fetchArticles(), or assembling the book in
+  // activateSelected()) -- loadingTotal == 0 means "no bar" (e.g. the
+  // brief Wi-Fi-check screen, or a download whose server didn't report a
+  // Content-Length). The two phases never overlap, so one pair of members
+  // serves both; each phase's units differ (bytes downloaded vs. articles
+  // processed) but the display only ever cares about progress/total.
+  size_t loadingProgress = 0;
+  size_t loadingTotal = 0;
 
   // Copied at construction, same rationale as OpdsBookBrowserActivity's own
   // OpdsServer member: safe even if the store changes while this is open.
@@ -108,9 +103,6 @@ class RssArticleListActivity final : public Activity, private UiAppHost {
   void buildStatusScreen(UiScreen& screen);
   void rebuildRowItems();
   void activateSelected();
-  // Path for articles[index]'s generated EPUB inside the shared, feed-ordered
-  // scratch folder -- see the class comment.
-  std::string articleEpubPath(size_t index) const;
 
   void checkAndConnectWifi();
   void launchWifiSelection();

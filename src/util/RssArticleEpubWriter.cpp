@@ -2,11 +2,11 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
-#include <ZipWriter.h>
 
 #include <algorithm>
 #include <cctype>
-#include <vector>
+#include <cstdio>
+#include <memory>
 
 std::string RssArticleEpubWriter::internal::xmlEscape(const std::string& s) {
   std::string out;
@@ -109,49 +109,7 @@ std::string buildChapterBody(const RssArticle& article, const std::string& escap
   return body;
 }
 
-std::string buildContentOpf(const std::string& escapedTitle, const std::string& imageHref, const bool imageIsPng) {
-  std::string opf;
-  opf += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-  opf += "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"uid\">\n";
-  opf += "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n";
-  opf += "    <dc:identifier id=\"uid\">crosspoint-rss-article</dc:identifier>\n";
-  opf += "    <dc:title>" + escapedTitle + "</dc:title>\n";
-  opf += "    <dc:language>en</dc:language>\n";
-  opf += "  </metadata>\n";
-  opf += "  <manifest>\n";
-  opf += "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n";
-  opf += "    <item id=\"chapter1\" href=\"chapter1.xhtml\" media-type=\"application/xhtml+xml\"/>\n";
-  if (!imageHref.empty()) {
-    opf += "    <item id=\"hero-image\" href=\"" + imageHref + "\" media-type=\"" +
-           (imageIsPng ? "image/png" : "image/jpeg") + "\"/>\n";
-  }
-  opf += "  </manifest>\n";
-  opf += "  <spine>\n";
-  opf += "    <itemref idref=\"chapter1\"/>\n";
-  opf += "  </spine>\n";
-  opf += "</package>\n";
-  return opf;
-}
-
-std::string buildNavXhtml(const std::string& escapedTitle) {
-  std::string nav;
-  nav += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-  nav += "<!DOCTYPE html>\n";
-  nav += "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n";
-  nav += "<head><title>Navigation</title></head>\n";
-  nav += "<body>\n";
-  nav += "  <nav epub:type=\"toc\">\n";
-  nav += "    <h1>Contents</h1>\n";
-  nav += "    <ol>\n";
-  nav += "      <li><a href=\"chapter1.xhtml\">" + escapedTitle + "</a></li>\n";
-  nav += "    </ol>\n";
-  nav += "  </nav>\n";
-  nav += "</body>\n";
-  nav += "</html>\n";
-  return nav;
-}
-
-std::string buildChapter1Xhtml(const std::string& body) {
+std::string buildChapterXhtml(const std::string& body) {
   std::string xhtml;
   xhtml += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
   xhtml += "<!DOCTYPE html>\n";
@@ -171,10 +129,27 @@ constexpr const char* CONTAINER_XML =
     "  </rootfiles>\n"
     "</container>\n";
 
+// 1-based chapter/image numbering in filenames, since that's how they're
+// presented in nav.xhtml/content.opf and a reader's Contents panel.
+std::string chapterFileName(const size_t index) {
+  char buf[24];
+  snprintf(buf, sizeof(buf), "chapter%zu.xhtml", index + 1);
+  return buf;
+}
+
+std::string imageFileName(const size_t index, const bool isPng) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "images/hero%zu.%s", index + 1, isPng ? "png" : "jpg");
+  return buf;
+}
+
 }  // namespace
 
-bool RssArticleEpubWriter::write(const RssArticle& article, const std::string& destPath, const std::string& imagePath,
-                                 const bool imageIsPng) {
+RssArticleEpubWriter::FeedBuilder::FeedBuilder() = default;
+RssArticleEpubWriter::FeedBuilder::~FeedBuilder() = default;
+
+bool RssArticleEpubWriter::FeedBuilder::begin(const std::string& destPathIn, const std::string& feedTitle) {
+  destPath = destPathIn;
   // Mirrors PersistableStoreBase::writeDocToFile's own mkdir-before-write:
   // called unconditionally and its result ignored -- the directory almost
   // always exists already (OPDS/RSS/settings all create it first), and
@@ -184,24 +159,104 @@ bool RssArticleEpubWriter::write(const RssArticle& article, const std::string& d
     Storage.mkdir(destPath.substr(0, lastSlash).c_str());
   }
 
-  const std::string escapedTitle = xmlEscape(article.title.empty() ? article.link : article.title);
-  const std::string imageHref = imagePath.empty() ? "" : std::string("images/hero.") + (imageIsPng ? "png" : "jpg");
+  feedTitleEscaped = xmlEscape(feedTitle.empty() ? "RSS Feed" : feedTitle);
+  chapters.clear();
 
-  ZipWriter zip(destPath);
-  bool ok = zip.open();
-  ok = ok && zip.addEntry("mimetype", "application/epub+zip");
-  ok = ok && zip.addEntry("META-INF/container.xml", CONTAINER_XML);
-  if (ok && !imageHref.empty()) {
-    ok = zip.addEntryFromFile("OEBPS/" + imageHref, imagePath);
+  zip = std::make_unique<ZipWriter>(destPath);
+  ok = zip->open();
+  ok = ok && zip->addEntry("mimetype", "application/epub+zip");
+  ok = ok && zip->addEntry("META-INF/container.xml", CONTAINER_XML);
+  return ok;
+}
+
+bool RssArticleEpubWriter::FeedBuilder::addArticle(const RssArticle& article, const std::string& imagePath,
+                                                   const bool imageIsPng) {
+  if (!ok || !zip) return false;
+
+  const size_t index = chapters.size();
+  const std::string escapedTitle = xmlEscape(article.title.empty() ? article.link : article.title);
+
+  std::string imageHref;
+  if (!imagePath.empty()) {
+    const std::string href = imageFileName(index, imageIsPng);
+    if (zip->addEntryFromFile("OEBPS/" + href, imagePath)) {
+      imageHref = href;
+    }
+    // A failed image embed (e.g. a since-removed temp file) degrades this
+    // chapter to text-only rather than failing it or the rest of the book
+    // -- see ZipWriter::addEntryFromFile()'s note on why an unreadable
+    // source doesn't poison the archive the way a broken write does.
   }
-  ok = ok && zip.addEntry("OEBPS/content.opf", buildContentOpf(escapedTitle, imageHref, imageIsPng));
-  ok = ok && zip.addEntry("OEBPS/nav.xhtml", buildNavXhtml(escapedTitle));
-  ok = ok && zip.addEntry("OEBPS/chapter1.xhtml",
-                          buildChapter1Xhtml(buildChapterBody(article, escapedTitle, imageHref)));
-  ok = zip.close() && ok;
+
+  const std::string body = buildChapterBody(article, escapedTitle, imageHref);
+  ok = zip->addEntry("OEBPS/" + chapterFileName(index), buildChapterXhtml(body));
+  if (!ok) return false;
+
+  chapters.push_back({escapedTitle, imageHref, imageIsPng});
+  return true;
+}
+
+bool RssArticleEpubWriter::FeedBuilder::finish() {
+  if (!ok || !zip) {
+    if (zip) zip->close();
+    return false;
+  }
+
+  std::string opf;
+  opf += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  opf += "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"uid\">\n";
+  opf += "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n";
+  opf += "    <dc:identifier id=\"uid\">crosspoint-rss-feed</dc:identifier>\n";
+  opf += "    <dc:title>" + feedTitleEscaped + "</dc:title>\n";
+  opf += "    <dc:language>en</dc:language>\n";
+  opf += "  </metadata>\n";
+  opf += "  <manifest>\n";
+  opf += "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n";
+  for (size_t i = 0; i < chapters.size(); i++) {
+    char idBuf[24];
+    snprintf(idBuf, sizeof(idBuf), "chapter%zu", i + 1);
+    opf += "    <item id=\"" + std::string(idBuf) + "\" href=\"" + chapterFileName(i) +
+           "\" media-type=\"application/xhtml+xml\"/>\n";
+    if (!chapters[i].imageHref.empty()) {
+      char imgIdBuf[24];
+      snprintf(imgIdBuf, sizeof(imgIdBuf), "image%zu", i + 1);
+      opf += "    <item id=\"" + std::string(imgIdBuf) + "\" href=\"" + chapters[i].imageHref + "\" media-type=\"" +
+             (chapters[i].imageIsPng ? "image/png" : "image/jpeg") + "\"/>\n";
+    }
+  }
+  opf += "  </manifest>\n";
+  opf += "  <spine>\n";
+  for (size_t i = 0; i < chapters.size(); i++) {
+    char idBuf[24];
+    snprintf(idBuf, sizeof(idBuf), "chapter%zu", i + 1);
+    opf += "    <itemref idref=\"" + std::string(idBuf) + "\"/>\n";
+  }
+  opf += "  </spine>\n";
+  opf += "</package>\n";
+
+  std::string nav;
+  nav += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  nav += "<!DOCTYPE html>\n";
+  nav += "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n";
+  nav += "<head><title>Navigation</title></head>\n";
+  nav += "<body>\n";
+  nav += "  <nav epub:type=\"toc\">\n";
+  nav += "    <h1>Contents</h1>\n";
+  nav += "    <ol>\n";
+  for (size_t i = 0; i < chapters.size(); i++) {
+    nav += "      <li><a href=\"" + chapterFileName(i) + "\">" + chapters[i].escapedTitle + "</a></li>\n";
+  }
+  nav += "    </ol>\n";
+  nav += "  </nav>\n";
+  nav += "</body>\n";
+  nav += "</html>\n";
+
+  ok = ok && zip->addEntry("OEBPS/content.opf", opf);
+  ok = ok && zip->addEntry("OEBPS/nav.xhtml", nav);
+  ok = zip->close() && ok;
 
   if (!ok) {
-    LOG_ERR("RSS", "Failed to write article EPUB to %s", destPath.c_str());
+    LOG_ERR("RSS", "Failed to write feed EPUB to %s", destPath.c_str());
     Storage.remove(destPath.c_str());  // don't leave a corrupt partial file behind
     return false;
   }
