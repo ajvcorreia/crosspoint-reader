@@ -8,6 +8,9 @@
 struct RssFeed {
   std::string name;
   std::string url;
+  // Per-feed override for where the combined EPUB is written. Empty inherits
+  // the global default (SETTINGS.rssDownloadFolder).
+  std::string folder;
 };
 
 /**

@@ -836,6 +836,7 @@
   // Dynamically renders an editable list of RSS feeds, communicating with the
   // /api/rss REST endpoints. No credentials in v1 -- unlike OPDS servers,
   // there's no password field to preserve on save.
+  // An empty Download folder means the feed inherits the device-wide default.
   let rssFeeds = [];
 
   function renderRssFeed(feed, idx) {
@@ -849,6 +850,10 @@
       '<div class="setting-row">' +
         '<span class="setting-name">Feed URL</span>' +
         '<span class="setting-control"><input type="text" id="rss-url-' + id + '" value="' + escapeHtml(feed.url || '') + '"></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Download folder</span>' +
+        '<span class="setting-control"><input type="text" id="rss-folder-' + id + '" placeholder="(default)" value="' + escapeHtml(feed.folder || '') + '"></span>' +
       '</div>' +
       '<div class="opds-actions">' +
         '<button class="btn-small btn-save-server" onclick="saveRssFeed(' + idx + ')">Save</button>' +
@@ -892,7 +897,7 @@
     const addBtn = card.querySelector('.btn-add').parentElement;
     // Prevent multiple unsaved new-feed forms at once (idx -1 → id "new")
     if (document.getElementById('rss-new')) return;
-    addBtn.insertAdjacentHTML('beforebegin', renderRssFeed({name:'',url:''}, -1));
+    addBtn.insertAdjacentHTML('beforebegin', renderRssFeed({name:'',url:'',folder:''}, -1));
   }
 
   async function saveRssFeed(idx) {
@@ -900,6 +905,7 @@
     const data = {
       name: document.getElementById('rss-name-' + id).value,
       url: document.getElementById('rss-url-' + id).value,
+      folder: document.getElementById('rss-folder-' + id).value,
     };
     if (idx >= 0) data.index = idx;
 

@@ -4,12 +4,15 @@
 
 #include <algorithm>
 
+#include "util/RssFilename.h"
+
 void RssFeedStore::toJson(JsonDocument& doc) const {
   JsonArray arr = doc["feeds"].to<JsonArray>();
   for (const auto& feed : feeds) {
     JsonObject obj = arr.add<JsonObject>();
     obj["name"] = feed.name;
     obj["url"] = feed.url;
+    obj["folder"] = feed.folder;
   }
 }
 
@@ -25,6 +28,8 @@ bool RssFeedStore::fromJson(JsonVariantConst doc) {
     RssFeed feed;
     feed.name = obj["name"] | "";
     feed.url = obj["url"] | "";
+    // Normalized on load too: tolerates a hand-edited or pre-normalization file.
+    feed.folder = normalizeRssFolder(obj["folder"] | "");
     feeds.push_back(std::move(feed));
   }
 

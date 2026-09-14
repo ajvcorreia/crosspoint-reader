@@ -7,13 +7,14 @@
 #include "MappedInputManager.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
+#include "util/RssFilename.h"
 
 namespace fui = freeink::ui;
 
 namespace {
-// Editable fields: Feed Name, Feed URL.
+// Editable fields: Feed Name, Feed URL, Download folder.
 // Existing feeds also show a Delete option (BASE_ITEMS + 1).
-constexpr int BASE_ITEMS = 2;
+constexpr int BASE_ITEMS = 3;
 }  // namespace
 
 RssFeedSettingsActivity::RssFeedSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -21,7 +22,8 @@ RssFeedSettingsActivity::RssFeedSettingsActivity(GfxRenderer& renderer, MappedIn
     : UiListActivity("RssFeedSettings", renderer, mappedInput), feedIndex(feedIndex) {
   // Labels never change (unlike the values, which track editFeed's fields
   // live), so they're set once here rather than every buildScreen() call.
-  static constexpr StrId fieldNames[BASE_ITEMS] = {StrId::STR_FEED_NAME, StrId::STR_FEED_URL};
+  static constexpr StrId fieldNames[BASE_ITEMS] = {StrId::STR_FEED_NAME, StrId::STR_FEED_URL,
+                                                    StrId::STR_RSS_DOWNLOAD_FOLDER};
   for (int i = 0; i < BASE_ITEMS; i++) {
     fieldRowItems[i].label = I18N.get(fieldNames[i]);
     fieldRowItems[i].actionValue = static_cast<int16_t>(i);
@@ -122,7 +124,21 @@ void RssFeedSettingsActivity::handleSelection() {
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_FEED_URL),
                                                                    prefillUrl, 127, InputType::Url),
                            handler);
-  } else if (nav.selected == 2 && !isNewFeed) {
+  } else if (nav.selected == 2) {
+    // Download folder. Empty defers to the global default, so the keyboard
+    // prefills with whatever this feed has set rather than the fallback.
+    auto handler = [this](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        editFeed.folder = normalizeRssFolder(kb.text);
+        saveFeed();
+        requestUpdate();
+      }
+    };
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_RSS_DOWNLOAD_FOLDER),
+                                                                   editFeed.folder, 63, InputType::Text),
+                           handler);
+  } else if (nav.selected == 3 && !isNewFeed) {
     // Delete flow is only available for existing feeds.
     if (!RSS_STORE.removeFeed(static_cast<size_t>(feedIndex))) {
       LOG_ERR("RSS", "Failed to remove RSS feed at index %d", feedIndex);
@@ -151,6 +167,9 @@ void RssFeedSettingsActivity::buildScreen(UiScreen& screen) {
   // new strings built) need refreshing here.
   fieldRowItems[0].value = editFeed.name.empty() ? tr(STR_NOT_SET) : editFeed.name.c_str();
   fieldRowItems[1].value = editFeed.url.empty() ? tr(STR_NOT_SET) : editFeed.url.c_str();
+  // Empty folder falls back to the feed list's default, so show "Default"
+  // rather than "Not Set" -- nothing is missing, it is just inherited.
+  fieldRowItems[2].value = editFeed.folder.empty() ? tr(STR_DEFAULT_VALUE) : editFeed.folder.c_str();
 
   fui::ListProps props;
   props.items = fieldRowItems;

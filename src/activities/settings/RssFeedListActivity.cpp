@@ -4,16 +4,21 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <cstring>
+
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "RssFeedSettingsActivity.h"
 #include "RssFeedStore.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
+#include "util/RssFilename.h"
 
 namespace fui = freeink::ui;
 
 int RssFeedListActivity::getItemCount() const {
-  // Index layout: [feeds 0..count-1], [Add Feed]
-  return static_cast<int>(RSS_STORE.getCount()) + 1;
+  // Index layout: [feeds 0..count-1], [Add Feed], [Default download folder]
+  return static_cast<int>(RSS_STORE.getCount()) + 2;
 }
 
 RssFeedListActivity::RssFeedListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -49,6 +54,11 @@ void RssFeedListActivity::rebuildRowItems() {
   addFeed.label = tr(STR_ADD_FEED);
   addFeed.actionValue = static_cast<int16_t>(feedCount);
   rowItems_.push_back(addFeed);
+
+  fui::ListItem folder;
+  folder.label = tr(STR_RSS_DEFAULT_DOWNLOAD_FOLDER);
+  folder.actionValue = static_cast<int16_t>(feedCount + 1);
+  rowItems_.push_back(folder);  // subtitle refreshed per render in buildScreen()
 }
 
 const char* RssFeedListActivity::headerTitle() const { return tr(STR_RSS_FEEDS); }
@@ -63,6 +73,25 @@ void RssFeedListActivity::activateIndex(const int index) {
 
 void RssFeedListActivity::handleSelection() {
   const auto feedCount = static_cast<int>(RSS_STORE.getCount());
+
+  // Index layout: [feeds 0..feedCount-1], [Add Feed], [Default download folder].
+  if (nav.selected == feedCount + 1) {
+    auto folderHandler = [this](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        const std::string norm = normalizeRssFolder(kb.text);
+        strncpy(SETTINGS.rssDownloadFolder, norm.c_str(), sizeof(SETTINGS.rssDownloadFolder) - 1);
+        SETTINGS.rssDownloadFolder[sizeof(SETTINGS.rssDownloadFolder) - 1] = '\0';
+        SETTINGS.saveToFile();
+        requestUpdate();
+      }
+    };
+    startActivityForResult(
+        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_RSS_DEFAULT_DOWNLOAD_FOLDER),
+                                                std::string(SETTINGS.rssDownloadFolder), 63, InputType::Text),
+        folderHandler);
+    return;
+  }
 
   auto resultHandler = [this](const ActivityResult&) {
     // Reload feed list when returning from editor
@@ -90,6 +119,14 @@ void RssFeedListActivity::buildScreen(UiScreen& screen) {
                   static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.buttonHintsHeight),
                   static_cast<int16_t>(safe.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  // rowItems_ (labels/actionValue, feed subtitles) was built by
+  // rebuildRowItems() when the feed list last reloaded; only the folder
+  // row's live subtitle needs refreshing here (pointer reassignment onto an
+  // already-owned string -- no allocation).
+  const auto feedCount = static_cast<int>(RSS_STORE.getCount());
+  rowItems_[feedCount + 1].subtitle =
+      SETTINGS.rssDownloadFolder[0] ? SETTINGS.rssDownloadFolder : tr(STR_OPDS_SD_ROOT);
 
   fui::ListProps props;
   props.items = rowItems_.data();

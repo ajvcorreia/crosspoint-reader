@@ -28,6 +28,7 @@
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
 #include "util/OpdsFilename.h"
+#include "util/RssFilename.h"
 #include "util/TaskWatchdog.h"
 
 namespace {
@@ -1491,6 +1492,7 @@ void CrossPointWebServer::handleGetRssFeeds() const {
     doc["index"] = i;
     doc["name"] = feeds[i].name;
     doc["url"] = feeds[i].url;
+    doc["folder"] = feeds[i].folder;
 
     const size_t written = serializeJson(doc, output, outputSize);
     if (written >= outputSize) continue;
@@ -1525,15 +1527,27 @@ void CrossPointWebServer::handlePostRssFeed() {
   feed.name = doc["name"] | std::string("");
   feed.url = doc["url"] | std::string("");
 
+  // Same absent-vs-empty rule as OPDS's downloadFolder: a client that omits
+  // the field keeps the stored folder, while an explicit "" clears it back
+  // to the global default.
+  bool hasFolderField = doc["folder"].is<const char*>() || doc["folder"].is<std::string>();
+  std::string folder = normalizeRssFolder(doc["folder"] | std::string(""));
+
   if (doc["index"].is<int>()) {
     int idx = doc["index"].as<int>();
     if (idx < 0 || idx >= static_cast<int>(RSS_STORE.getCount())) {
       server->send(400, "text/plain", "Invalid feed index");
       return;
     }
+    if (!hasFolderField) {
+      const auto* existing = RSS_STORE.getFeed(static_cast<size_t>(idx));
+      if (existing) folder = existing->folder;
+    }
+    feed.folder = folder;
     RSS_STORE.updateFeed(static_cast<size_t>(idx), feed);
     LOG_DBG("WEB", "Updated RSS feed at index %d", idx);
   } else {
+    feed.folder = folder;
     if (!RSS_STORE.addFeed(feed)) {
       server->send(400, "text/plain", "Cannot add feed (limit reached)");
       return;

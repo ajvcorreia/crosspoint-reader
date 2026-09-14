@@ -357,6 +357,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
                           {StrId::STR_FMT_AUTHOR_TITLE, StrId::STR_FMT_TITLE_AUTHOR, StrId::STR_FMT_TITLE},
                           "opdsFilenameFormat"),
+        // Default RSS download folder (per-feed folders override it): persisted
+        // + web-exposed, but category-less so it is hidden from the on-device
+        // Settings screen (edited via the RSS feed list UI).
+        SettingInfo::String(StrId::STR_RSS_DOWNLOAD_FOLDER, &SETTINGS.rssDownloadFolder[0],
+                            sizeof(SETTINGS.rssDownloadFolder), "rssDownloadFolder"),
 
         // Frontlight quick-panel state: persisted and web-exposed, but hidden
         // from the on-device Settings screen because the swipe panel owns it.

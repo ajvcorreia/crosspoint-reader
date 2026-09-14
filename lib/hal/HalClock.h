@@ -34,6 +34,13 @@ class HalClock {
   // Returns false if RTC is not available.
   bool formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased = 48, bool use12Hour = false) const;
 
+  // Full-precision, uncached read (year/month/day included, unlike getTime()).
+  // A cold-path query -- e.g. building a timestamped filename -- not meant to
+  // be called every render. UTC, same as the RTC's own stored value (see
+  // syncFromNTP()); does not apply a display timezone offset.
+  // Returns false if RTC is not available or the read fails.
+  bool now(Rtc::DateTime& out) const;
+
   // Sync the RTC from an NTP server. Requires WiFi to be connected.
   // Blocks for up to ~5s while waiting for SNTP response.
   // Returns true if the RTC was successfully updated.

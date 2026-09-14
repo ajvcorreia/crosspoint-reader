@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -12,6 +13,7 @@
 #include <iterator>
 #include <utility>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
@@ -20,6 +22,7 @@
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
 #include "util/RssArticleEpubWriter.h"
+#include "util/RssFilename.h"
 #include "util/TaskWatchdog.h"
 
 namespace fui = freeink::ui;
@@ -27,11 +30,6 @@ namespace fui = freeink::ui;
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
 
-// Scratch output, not a library book: a single combined EPUB (one chapter
-// per article) for the whole feed, overwritten every time any article in
-// this feed is opened -- see the class comment for why this replaced an
-// earlier one-file-per-article design.
-constexpr const char* FEED_EPUB_PATH = "/.crosspoint/rss_feed.epub";
 constexpr const char* FEED_TEMP_PATH = "/.crosspoint/rss_feed.tmp";
 constexpr const char* IMAGE_TEMP_PATH = "/.crosspoint/rss_image.tmp";
 // A single article's hero image, not a whole gallery -- 2MB comfortably
@@ -100,6 +98,34 @@ std::string downloadArticleImage(const std::string& imageUrl, bool& isPng) {
 
   return IMAGE_TEMP_PATH;
 }
+
+// Resolves where this feed's combined EPUB gets written: the feed's own
+// folder override, or SETTINGS.rssDownloadFolder (default "/RSS") when
+// unset, plus a "<feed name> - <date> - <time>.epub" filename. mkdir/exists
+// fallback mirrors OpdsBookBrowserActivity::downloadBook()'s own handling of
+// a bad configured folder. Re-opening the same feed within the same
+// wall-clock second reproduces an identical path, which HalStorage's
+// openFileForWrite() (O_TRUNC) simply overwrites -- no separate dedup logic
+// needed. The RTC read is UTC and best-effort: if it fails (no RTC, or never
+// synced), Rtc::DateTime's own defaults (2000-01-01 00:00:00) are used,
+// which still produces a valid, if less informative, deterministic filename.
+std::string resolveFeedEpubPath(const RssFeed& feed) {
+  const char* folder = feed.folder.empty() ? SETTINGS.rssDownloadFolder : feed.folder.c_str();
+  std::string dir = folder;
+  if (!dir.empty() && !Storage.exists(dir.c_str()) && !Storage.mkdir(dir.c_str())) {
+    LOG_ERR("RSS", "mkdir failed for %s, using SD root", dir.c_str());
+    dir.clear();
+  }
+
+  Rtc::DateTime dt;
+  halClock.now(dt);
+
+  std::string path = dir;
+  if (!path.empty()) path += '/';
+  path += rssFeedFilename(feed.name.empty() ? feed.url : feed.name, dt.year, dt.month, dt.day, dt.hour, dt.minute,
+                          dt.second);
+  return path;
+}
 }  // namespace
 
 RssArticleListActivity::RssArticleListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, RssFeed feed)
@@ -158,8 +184,10 @@ void RssArticleListActivity::activateSelected() {
   loadingTotal = articles.size();
   requestUpdate(true);
 
+  const std::string feedEpubPath = resolveFeedEpubPath(feed);
+
   RssArticleEpubWriter::FeedBuilder builder;
-  if (!builder.begin(FEED_EPUB_PATH, feed.name)) {
+  if (!builder.begin(feedEpubPath, feed.name)) {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_RSS_ARTICLE_OPEN_FAILED);
     loadingTotal = 0;
@@ -223,21 +251,23 @@ void RssArticleListActivity::activateSelected() {
     return;
   }
 
-  // FEED_EPUB_PATH is one fixed path reused (fully overwritten) by every
-  // feed and every re-open, but the reader's spine/TOC/CSS metadata cache is
-  // keyed purely by a hash of that path -- it has no idea the file's actual
-  // content just changed. Without this, opening a second feed (or the same
-  // feed after it changed) would silently reuse the previous book's cached
-  // chapters. clearBookCache() also drops the saved reading position for
+  // Each feedEpubPath is normally unique per open (feed name + folder +
+  // current date/time), so the reader's spine/TOC/CSS metadata cache (keyed
+  // purely by a hash of the path) is naturally fresh -- except on the rare
+  // re-open within the same wall-clock second, which reproduces the exact
+  // same path/content and would otherwise resurface a stale cache the same
+  // way a fixed scratch path always did. clearBookCache() covers that case
+  // unconditionally; it's a cheap no-op (Storage.exists() check only) when
+  // there's nothing to clear. It also drops the saved reading position for
   // this path, which is what we want: every regeneration should start fresh
   // at chapter 1, not resume into a chapter list that no longer matches.
-  clearBookCache(FEED_EPUB_PATH);
+  clearBookCache(feedEpubPath);
 
   // Replaces the whole activity stack, same as opening any other book --
   // see the class comment on why that's the right behavior here. Always
   // opens at the book's own saved position (chapter 1, the first time), not
   // necessarily the tapped row's chapter -- see the class comment.
-  activityManager.goToReader(FEED_EPUB_PATH);
+  activityManager.goToReader(feedEpubPath);
 }
 
 void RssArticleListActivity::onRowEvent(const fui::ActionEvent& event, void* user) {

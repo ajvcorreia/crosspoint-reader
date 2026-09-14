@@ -38,10 +38,13 @@
  * the feed as its own chapter (RssArticleEpubWriter::FeedBuilder, backed by
  * the from-scratch STORED-only ZipWriter -- ZipFile only reads), each with
  * its hero image embedded if it has one, and opens it via the normal
- * reader -- the same way any other book is opened. This is a single fixed
- * scratch path, not a library book, overwritten every time any article in
- * this feed is opened (so a fresh fetchArticles() always produces a fully
- * current book; nothing tracks which articles changed since last time).
+ * reader -- the same way any other book is opened. Unlike a scratch file,
+ * this book is written into the feed's own download folder (RssFeed::folder,
+ * falling back to SETTINGS.rssDownloadFolder) as "<feed name> - <date> -
+ * <time>.epub" (see resolveFeedEpubPath() in the .cpp) -- so it's a real,
+ * persisted library entry, and successive opens normally accumulate distinct
+ * snapshots rather than overwrite one another; a re-open within the same
+ * wall-clock second is the only case that overwrites (identical path).
  * Reading forward through the feed, and jumping to any specific article,
  * are then just the reader's own ordinary chapter navigation (turning the
  * page past a chapter's last page, or its Contents/TOC panel) -- unlike an
