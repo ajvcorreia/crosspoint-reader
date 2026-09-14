@@ -44,7 +44,10 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeCoverTileHeight = 350,
                                  .homeRecentBooksCount = 1,
                                  .homeContinueReadingInMenu = true,
-                                 .homeMenuTopOffset = 20,
+                                 // With OPDS and RSS both configured the menu grows to 7 rows; trimmed down from
+                                 // 20 so that taller stack still sits roughly centered below the cover instead of
+                                 // crowding Settings toward the bottom edge.
+                                 .homeMenuTopOffset = 8,
                                  .buttonHintsHeight = 40,
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
