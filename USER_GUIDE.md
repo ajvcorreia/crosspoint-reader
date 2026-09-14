@@ -27,8 +27,9 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
       - [3.6.3 Controls](#363-controls)
       - [3.6.4 System](#364-system)
       - [3.6.5 OPDS Servers (Multiple Libraries)](#365-opds-servers-multiple-libraries)
-      - [3.6.6 Web Settings (Wi-Fi + OPDS)](#366-web-settings-wi-fi--opds)
-      - [3.6.7 KOReader Sync Quick Setup](#367-koreader-sync-quick-setup)
+      - [3.6.6 RSS Feeds](#366-rss-feeds)
+      - [3.6.7 Web Settings (Wi-Fi + OPDS + RSS)](#367-web-settings-wi-fi--opds--rss)
+      - [3.6.8 KOReader Sync Quick Setup](#368-koreader-sync-quick-setup)
         - [Option A: CrossPoint Sync Server (`sync.crosspointreader.com`, default)](#option-a-crosspoint-sync-server-synccrosspointreadercom-default)
         - [Option B: Legacy Public KOReader Server (`sync.koreader.rocks`)](#option-b-legacy-public-koreader-server-synckoreaderrocks)
         - [Option C: Self-Hosted Server (Docker Compose)](#option-c-self-hosted-server-docker-compose)
@@ -320,6 +321,8 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 - **OPDS Servers**: Manage one or more OPDS [(Open Publication Distribution System)](https://en.wikipedia.org/wiki/Open_Publication_Distribution_System) libraries for browsing and downloading books. See [OPDS Servers (Multiple Libraries)](#365-opds-servers-multiple-libraries) below.
 
+- **RSS Feeds**: Manage RSS/Atom feeds for reading articles as EPUB books. See [RSS Feeds](#366-rss-feeds) below.
+
 - **Clear Reading Cache**: Clear the internal SD card cache.
 
 - **Check for updates**: Check for Crosspoint firmware updates over Wi-Fi. Firmware can also be updated without a USB connection by placing a `firmware.bin` file on the SD card.
@@ -366,25 +369,62 @@ You can also manage OPDS servers from the web interface while in File Transfer m
 2. Open `http://<device-ip>/settings`.
 3. Use the **OPDS Servers** card to add, edit, or delete entries, including each server's **Download folder**.
 
-For web-based Wi-Fi network management, see [Web Settings (Wi-Fi + OPDS)](#366-web-settings-wi-fi--opds).
+For web-based Wi-Fi network management, see [Web Settings (Wi-Fi + OPDS + RSS)](#367-web-settings-wi-fi--opds--rss).
 
-#### 3.6.6 Web Settings (Wi-Fi + OPDS)
+#### 3.6.6 RSS Feeds
 
-While in **File Transfer** mode, the web settings page includes management cards for both **Wi-Fi Networks** and **OPDS Servers**.
+CrossPoint can subscribe to RSS/Atom feeds and read their articles as a single combined EPUB, one chapter per article.
+
+1. Open **Settings -> System -> RSS Feeds**.
+
+2. Select **Add Feed** to create a new entry, or select an existing feed to edit it.
+
+3. Configure these fields:
+   
+   - **Feed Name**: Optional display name (for example, "Tech News").
+   
+   - **Feed URL**: The feed's RSS or Atom URL.
+   
+   - **Download folder**: Where this feed's combined EPUB is saved, for example `/RSS/tech`. Leave it on **Default** to use the shared folder described below.
+
+4. Use **Delete Feed** inside a feed entry to remove it.
+
+The feed list screen also has a setting that applies to every feed:
+
+- **Default download folder**: Where the combined EPUB goes for any feed that has not set a folder of its own. Defaults to `/RSS`.
+
+Behavior notes:
+
+- You can store up to 20 RSS feeds.
+- Opening any article from a feed (**Home -> RSS Reader**) downloads every article in the feed (with images) and assembles them into one EPUB, named `<feed name> - <date> - <time>.epub`. Reading forward through the feed, or jumping to a specific article, is then just the reader's normal chapter navigation.
+- Re-opening the same feed again later creates a new, separate EPUB with a fresh timestamp rather than overwriting the previous one, so past snapshots accumulate in the download folder — only re-opening within the same wall-clock second reuses (and overwrites) the same file.
+- Folders are created on demand when a feed is first opened. If a folder cannot be created, the book is saved to the SD card root rather than being lost.
+- Paths are tidied automatically: a leading `/` is added if you omit it, and trailing slashes are removed.
+
+You can also manage RSS feeds from the web interface while in File Transfer mode:
+
+1. Connect to the device web UI.
+2. Open `http://<device-ip>/settings`.
+3. Use the **RSS Feeds** card to add, edit, or delete entries, including each feed's **Download folder**.
+
+#### 3.6.7 Web Settings (Wi-Fi + OPDS + RSS)
+
+While in **File Transfer** mode, the web settings page includes management cards for **Wi-Fi Networks**, **OPDS Servers**, and **RSS Feeds**.
 
 1. On device: open **File Transfer** and connect through **Join a Network** or **Create Hotspot**.
 2. In a browser, open `http://<device-ip>/settings` or `http://crosspoint.local`.
 3. In **Wi-Fi Networks**, add, edit, or delete saved network entries (SSID + optional password).
 4. In **OPDS Servers**, add, edit, or delete OPDS catalogs.
+5. In **RSS Feeds**, add, edit, or delete RSS/Atom feeds.
 
 Behavior notes:
 
 - Passwords are never shown back in the web UI after saving.
-- Clearing a server's **Download folder** in the web UI resets it to the device's default download folder.
+- Clearing an OPDS server's or RSS feed's **Download folder** in the web UI resets it to that feature's device-wide default download folder.
 - Leaving Password blank while editing keeps the existing saved password unchanged.
 - The web UI can save hidden-network SSIDs, but connecting to hidden networks still depends on the device-side Wi-Fi connection flow.
 
-#### 3.6.7 KOReader Sync Quick Setup
+#### 3.6.8 KOReader Sync Quick Setup
 
 CrossPoint can sync reading progress with KOReader-compatible sync servers.
 It also interoperates with KOReader apps/devices when they use the same server and credentials.
@@ -655,7 +695,7 @@ Available options include:
 - **Take screenshot** – Save a screenshot of the current page to the `screenshots/` folder.
 - **Show page as QR** – Display a QR code encoding the current reading position.
 - **Go Home** – Close the book and return to the Home screen.
-- **Sync Progress** – Push or pull reading progress with a KOReader sync server (see [KOReader Sync Quick Setup](#367-koreader-sync-quick-setup)).
+- **Sync Progress** – Push or pull reading progress with a KOReader sync server (see [KOReader Sync Quick Setup](#368-koreader-sync-quick-setup)).
 - **Delete Book Cache** – Clear the cached layout data for the current book, forcing a re-index on next open.
 
 Press **Back** at any time to close the menu and return to your current page.

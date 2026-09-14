@@ -41,6 +41,15 @@ class HalClock {
   // Returns false if RTC is not available or the read fails.
   bool now(Rtc::DateTime& out) const;
 
+  // Same as now(), but shifts the result by utcOffsetQuarterHoursBiased (same
+  // bias convention as formatTime()) with calendar-correct day/month/year
+  // rollover -- for callers that want a wall-clock value matching what the
+  // user sees on-screen (e.g. a human-readable filename timestamp) rather
+  // than the RTC's raw UTC value. `out.weekday` is left as read from the RTC
+  // and is NOT recomputed for the shifted date -- ignore it after this call.
+  // Returns false if RTC is not available or the read fails.
+  bool nowLocal(Rtc::DateTime& out, uint8_t utcOffsetQuarterHoursBiased = 48) const;
+
   // Sync the RTC from an NTP server. Requires WiFi to be connected.
   // Blocks for up to ~5s while waiting for SNTP response.
   // Returns true if the RTC was successfully updated.

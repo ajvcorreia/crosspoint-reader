@@ -5,6 +5,8 @@
 #include <esp_sntp.h>
 #include <time.h>
 
+#include "ClockOffset.h"
+
 HalClock halClock;  // Singleton instance
 
 void HalClock::begin() {
@@ -40,6 +42,29 @@ bool HalClock::getTime(uint8_t& hour, uint8_t& minute) const {
 }
 
 bool HalClock::now(Rtc::DateTime& out) const { return _available && _sdkRtc.now(out); }
+
+bool HalClock::nowLocal(Rtc::DateTime& out, uint8_t utcOffsetQuarterHoursBiased) const {
+  if (!now(out)) return false;
+
+  // Same bias convention and clamp as formatTime(): keeps the shift inside
+  // [-12:00, +14:00] even against a corrupted persisted value.
+  if (utcOffsetQuarterHoursBiased > 104) utcOffsetQuarterHoursBiased = 104;
+  const int offsetMinutes = (static_cast<int>(utcOffsetQuarterHoursBiased) - 48) * 15;
+
+  int year = out.year;
+  int month = out.month;
+  int day = out.day;
+  int hour = out.hour;
+  int minute = out.minute;
+  applyClockOffsetMinutes(year, month, day, hour, minute, offsetMinutes);
+
+  out.year = static_cast<uint16_t>(year);
+  out.month = static_cast<uint8_t>(month);
+  out.day = static_cast<uint8_t>(day);
+  out.hour = static_cast<uint8_t>(hour);
+  out.minute = static_cast<uint8_t>(minute);
+  return true;
+}
 
 bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased, bool use12Hour) const {
   if (bufSize < (use12Hour ? 9u : 6u)) return false;

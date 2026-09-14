@@ -374,6 +374,61 @@ curl -X POST \
   http://crosspoint.local/api/opds/delete
 ```
 
+## RSS Feed API
+
+### `GET /api/rss`
+
+Lists saved RSS/Atom feeds.
+
+```bash
+curl http://crosspoint.local/api/rss
+```
+
+Response:
+
+```json
+[
+  {
+    "index": 0,
+    "name": "Tech News",
+    "url": "https://example.com/feed.xml",
+    "folder": "/RSS/tech"
+  }
+]
+```
+
+`folder` is this feed's own download destination for its combined EPUB. An
+empty string means the feed inherits the device-wide `rssDownloadFolder`
+setting, which defaults to `/RSS`.
+
+### `POST /api/rss`
+
+Adds or updates an RSS feed. Include `index` to update an existing entry.
+`folder` follows the same absent-vs-empty rule as OPDS's `downloadFolder`:
+omit it to keep the stored folder, or send an explicit `""` to reset the feed
+back to the device-wide default. For non-empty values, leading and trailing
+spaces or tabs are removed, a leading `/` is added when missing, and trailing
+`/` characters are removed. A bare `/` also resets the feed to the
+device-wide default.
+
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Tech News","url":"https://example.com/feed.xml","folder":"/RSS/tech"}' \
+  http://crosspoint.local/api/rss
+```
+
+### `POST /api/rss/delete`
+
+Deletes an RSS feed by index.
+
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"index":0}' \
+  http://crosspoint.local/api/rss/delete
+```
+
 ## Wi-Fi Credential API
 
 ### `GET /api/wifi`

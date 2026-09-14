@@ -106,9 +106,11 @@ std::string downloadArticleImage(const std::string& imageUrl, bool& isPng) {
 // a bad configured folder. Re-opening the same feed within the same
 // wall-clock second reproduces an identical path, which HalStorage's
 // openFileForWrite() (O_TRUNC) simply overwrites -- no separate dedup logic
-// needed. The RTC read is UTC and best-effort: if it fails (no RTC, or never
-// synced), Rtc::DateTime's own defaults (2000-01-01 00:00:00) are used,
-// which still produces a valid, if less informative, deterministic filename.
+// needed. The read is shifted to the same local time the on-screen clock
+// shows (SETTINGS.clockUtcOffsetQ) and is best-effort: if it fails (no RTC,
+// or never synced), Rtc::DateTime's own defaults (2000-01-01 00:00:00) are
+// used, which still produces a valid, if less informative, deterministic
+// filename.
 std::string resolveFeedEpubPath(const RssFeed& feed) {
   const char* folder = feed.folder.empty() ? SETTINGS.rssDownloadFolder : feed.folder.c_str();
   std::string dir = folder;
@@ -118,7 +120,7 @@ std::string resolveFeedEpubPath(const RssFeed& feed) {
   }
 
   Rtc::DateTime dt;
-  halClock.now(dt);
+  halClock.nowLocal(dt, SETTINGS.clockUtcOffsetQ);
 
   std::string path = dir;
   if (!path.empty()) path += '/';
