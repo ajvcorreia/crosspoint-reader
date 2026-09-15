@@ -28,8 +28,6 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr fui::ActionId ACTION_ROW = 1;
-
 constexpr const char* FEED_TEMP_PATH = "/.crosspoint/rss_feed.tmp";
 constexpr const char* IMAGE_TEMP_PATH = "/.crosspoint/rss_image.tmp";
 // A single article's hero image, not a whole gallery -- 2MB comfortably
@@ -131,26 +129,20 @@ std::string resolveFeedEpubPath(const RssFeed& feed) {
 }  // namespace
 
 RssArticleListActivity::RssArticleListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, RssFeed feed)
-    : Activity("RssArticleList", renderer, mappedInput),
-      UiAppHost(renderer),
-      buttonNavigator(),
-      feed(std::move(feed)) {}
+    : Activity("RssArticleList", renderer, mappedInput), UiAppHost(renderer), feed(std::move(feed)) {}
 
 void RssArticleListActivity::onEnter() {
   Activity::onEnter();
 
   state = BrowserState::CHECK_WIFI;
   articles.clear();
-  selectorIndex = 0;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
   statusDetail.clear();
   loadingProgress = 0;
   loadingTotal = 0;
 
-  listNav.reset();
   resetUi();
-  app.on(ACTION_ROW, &RssArticleListActivity::onRowEvent, this);
   app.setScreen(&RssArticleListActivity::rootScreen, this);
   requestUpdate();
 
@@ -169,16 +161,10 @@ void RssArticleListActivity::onExit() {
   }
 }
 
-void RssArticleListActivity::activateSelected() {
-  if (articles.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(articles.size())) return;
-
-  // Every article in the feed goes into the one combined book regardless of
-  // which row was tapped (see the class comment) -- so which row triggered
-  // this only matters for which chapter the user probably wants to land on
-  // first, not for what gets built. Rebuilt unconditionally rather than
-  // reused across taps: simpler than tracking whether the existing file is
-  // still current, and this activity only reaches here when the user is
-  // actively about to read, so the cost is never paid for nothing.
+void RssArticleListActivity::buildAndOpenBook() {
+  // Called only right after fetchArticles() confirms `articles` is
+  // non-empty -- every article in the feed goes into the one combined book
+  // (see the class comment), so there's nothing left to pick.
   state = BrowserState::LOADING;
   statusMessage = tr(STR_RSS_PREPARING_ARTICLES);
   statusDetail.clear();
@@ -262,25 +248,12 @@ void RssArticleListActivity::activateSelected() {
   // unconditionally; it's a cheap no-op (Storage.exists() check only) when
   // there's nothing to clear. It also drops the saved reading position for
   // this path, which is what we want: every regeneration should start fresh
-  // at chapter 1, not resume into a chapter list that no longer matches.
+  // at chapter 1.
   clearBookCache(feedEpubPath);
 
   // Replaces the whole activity stack, same as opening any other book --
-  // see the class comment on why that's the right behavior here. Always
-  // opens at the book's own saved position (chapter 1, the first time), not
-  // necessarily the tapped row's chapter -- see the class comment.
+  // see the class comment on why that's the right behavior here.
   activityManager.goToReader(feedEpubPath);
-}
-
-void RssArticleListActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
-  auto* self = static_cast<RssArticleListActivity*>(user);
-  if (self->state != BrowserState::BROWSING) return;
-  if (event.value < 0 || event.value >= static_cast<int16_t>(self->articles.size())) return;
-  self->selectorIndex = event.value;
-  // The tapped row leaves the screen either way (reader or an error screen);
-  // a lingering tap flash would gray an unrelated row on the next list.
-  self->app.clearTapFlash();
-  self->activateSelected();
 }
 
 void RssArticleListActivity::loop() {
@@ -303,69 +276,15 @@ void RssArticleListActivity::loop() {
     return;
   }
 
-  if (state == BrowserState::CHECK_WIFI || state == BrowserState::LOADING) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
-    return;
-  }
-
-  // BROWSING
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    activateSelected();
-    return;
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  // Touch goes through the FreeInkApp: render() registered every tap target
-  // (rows); route the snapshot and let onRowEvent dispatch.
-  const auto route = routeTouch(mappedInput);
-  if (route.routed) {
-    // No pressed-state repaint: the render it triggers would drop a slow
-    // tap's release inside the uiReady window, and it costs a second e-ink
-    // refresh per tap.
-    if (app.invalidated()) requestUpdate();
-    if (route) return;  // dispatched to onRowEvent
-    if (state != BrowserState::BROWSING) return;
-  }
-
-  if (!articles.empty()) {
-    // Swipes scroll the viewport; the selection stays put (it may scroll
-    // off-screen) and button navigation pulls the view back to it.
-    const auto swipe = mappedInput.wasSwipe();
-    if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
-      const int delta = swipe == MappedInputManager::SwipeDir::Up ? listNav.visibleRows : -listNav.visibleRows;
-      if (listNav.scrollBy(delta, static_cast<int>(articles.size()))) requestUpdate();
-      return;
-    }
-
-    const auto moveSelection = [this](const int index) {
-      selectorIndex = index;
-      listNav.selected = index;
-      listNav.follow(static_cast<int>(articles.size()));
-      requestUpdate();
-    };
-    buttonNavigator.onNextRelease(
-        [this, &moveSelection] { moveSelection(ButtonNavigator::nextIndex(selectorIndex, articles.size())); });
-    buttonNavigator.onPreviousRelease(
-        [this, &moveSelection] { moveSelection(ButtonNavigator::previousIndex(selectorIndex, articles.size())); });
-    buttonNavigator.onNextContinuous([this, &moveSelection] {
-      moveSelection(ButtonNavigator::nextPageIndex(selectorIndex, articles.size(), listNav.visibleRows));
-    });
-    buttonNavigator.onPreviousContinuous([this, &moveSelection] {
-      moveSelection(ButtonNavigator::previousPageIndex(selectorIndex, articles.size(), listNav.visibleRows));
-    });
-  }
+  // CHECK_WIFI / LOADING: Back is the only input this activity ever reads
+  // outside ERROR -- fetching and building both run to completion (or an
+  // ERROR state) without further user input, see the class comment.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
 }
 
 void RssArticleListActivity::rootScreen(UiScreen& screen, void* user) {
   auto* self = static_cast<RssArticleListActivity*>(user);
-  if (self->state == BrowserState::BROWSING) {
-    self->buildBrowsingScreen(screen);
-  } else {
-    self->buildStatusScreen(screen);
-  }
+  self->buildStatusScreen(screen);
 }
 
 // Shared chrome for every state: reserve the firmware's button-hint band and
@@ -381,36 +300,6 @@ void RssArticleListActivity::screenHeader(UiScreen& screen) {
   screen.header(header);
   // Same breathing room between header and content as the legacy screens.
   screen.spacer(static_cast<int16_t>(UITheme::getInstance().getMetrics().verticalSpacing));
-}
-
-void RssArticleListActivity::buildBrowsingScreen(UiScreen& screen) {
-  screenHeader(screen);
-
-  if (articles.empty()) {
-    screen.centeredText(tr(STR_RSS_NO_ARTICLES), screen.theme().bodyText);
-    return;
-  }
-
-  // rowItems is rebuilt whenever articles changes (see rebuildRowItems(),
-  // called from fetchArticles()) and reused here on every repaint instead of
-  // rebuilding a ListItem vector per render.
-  fui::ListProps props;
-  props.items = rowItems.data();
-  props.count = static_cast<uint16_t>(rowItems.size());
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
-  props.valueInset = 8;               // air between the nav chevron and the row edge
-  listNav.selected = selectorIndex;
-  int16_t rowHeight = screen.theme().rowHeight;
-  if (!mappedInput.hasTouch()) {
-    // Non-touch hardware (X3/X4) keeps the original, denser row height
-    // instead of FreeInkUI's touch-target-sized default. Article rows carry
-    // a published-date/author subtitle.
-    rowHeight = static_cast<int16_t>(UITheme::getInstance().getMetrics().listWithSubtitleRowHeight);
-    props.rowHeight = rowHeight;
-  }
-  listNav.syncToProps(screen.body(), rowHeight, screen.theme().listRowGap, static_cast<int>(articles.size()), props);
-  screen.list(props);
 }
 
 void RssArticleListActivity::buildStatusScreen(UiScreen& screen) {
@@ -433,7 +322,7 @@ void RssArticleListActivity::buildStatusScreen(UiScreen& screen) {
 
   if (state == BrowserState::LOADING && loadingTotal > 0) {
     // Either fetchArticles()'s feed-download progress or
-    // activateSelected()'s book-assembly progress: a live status message
+    // buildAndOpenBook()'s book-assembly progress: a live status message
     // (+ an optional second line, e.g. an article title -- see
     // statusDetail's own comment) + a bar, laid out the same way as
     // OpdsBookBrowserActivity's own download screen. Whichever set
@@ -559,45 +448,22 @@ void RssArticleListActivity::fetchArticles() {
   }
 
   const bool feedTruncated = parser.truncated();
-
-  // Reset the selection before the swap: the render task reads
-  // articles[selectorIndex] under only an empty() guard, and the new feed
-  // can be shorter than the old selection.
-  selectorIndex = 0;
-  listNav.reset();
   articles = std::move(parser).getArticles();
 
   if (feedTruncated) {
     LOG_INF("RSS", "Feed truncated to fit memory");
   }
 
-  state = articles.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
-  if (articles.empty()) errorMessage = tr(STR_RSS_NO_ARTICLES);
-  rebuildRowItems();
-  requestUpdate();
-}
-
-// Derives rowItems from articles. Called whenever articles changes
-// (fetchArticles()) so buildBrowsingScreen() reuses the cached rows on every
-// repaint instead of rebuilding them per render.
-void RssArticleListActivity::rebuildRowItems() {
-  rowItems.clear();
-  rowItems.reserve(articles.size());
-  for (size_t i = 0; i < articles.size(); i++) {
-    const auto& article = articles[i];
-    fui::ListItem item;
-    item.label = article.title.empty() ? article.link.c_str() : article.title.c_str();
-    // No date-formatting utility exists in this codebase yet -- publishedAt
-    // is the feed's raw pubDate/updated/published string; show it as-is.
-    // Pretty-formatting is a polish-phase concern, not a fetch/parse/list one.
-    if (!article.publishedAt.empty()) {
-      item.subtitle = article.publishedAt.c_str();
-    } else if (!article.author.empty()) {
-      item.subtitle = article.author.c_str();
-    }
-    item.actionValue = static_cast<int16_t>(i);
-    rowItems.push_back(item);
+  if (articles.empty()) {
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_RSS_NO_ARTICLES);
+    requestUpdate();
+    return;
   }
+
+  // No article picker: every article in the feed goes into the same combined
+  // book regardless, so there's nothing to choose -- see the class comment.
+  buildAndOpenBook();
 }
 
 void RssArticleListActivity::checkAndConnectWifi() {
