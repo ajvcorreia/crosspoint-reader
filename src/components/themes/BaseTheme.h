@@ -134,7 +134,10 @@ enum UIIcon {
   Wifi,
   Hotspot,
   Bookmark,
-  Usb
+  Usb,
+  Check,
+  FolderPlus,
+  CornerLeftUp
 };
 
 // Default theme implementation (Classic Theme)

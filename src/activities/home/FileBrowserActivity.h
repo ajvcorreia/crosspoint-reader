@@ -8,8 +8,10 @@
 
 class FileBrowserActivity final : public UiListActivity {
  public:
-  // Books = standard reader browser; PickFirmware = filter to .bin only and return path via ActivityResult.
-  enum class Mode { Books, PickFirmware };
+  // Books = standard reader browser; PickFirmware = filter to .bin only and return path via
+  // ActivityResult; PickFolder = directories only, with "Use this folder" / "New folder" rows,
+  // returning the chosen directory path via ActivityResult.
+  enum class Mode { Books, PickFirmware, PickFolder };
 
  private:
   // Deletion
@@ -38,6 +40,11 @@ class FileBrowserActivity final : public UiListActivity {
 
   void rebuildRowItems();
 
+  // PickFolder mode: prompts for a name via the keyboard and mkdir's it under
+  // basepath, then reloads the listing. Shows an error popup on failure.
+  void promptNewFolder();
+  bool newFolderError = false;
+
   int listCount() const override { return static_cast<int>(files.size()); }
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
@@ -57,6 +64,9 @@ class FileBrowserActivity final : public UiListActivity {
   // Data loading
   void loadFiles();
   size_t findEntry(const std::string& name) const;
+  // Shared by the ".." row and the Back-button short-press: steps basepath up
+  // one level, reloads, and restores selection onto the directory just left.
+  void goUpOneDirectory();
 
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",

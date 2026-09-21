@@ -8,10 +8,12 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cctype>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
@@ -22,6 +24,18 @@ namespace fui = freeink::ui;
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
 constexpr size_t NAME_BUFFER_SIZE = 500;
+// Synthetic rows spliced into `files` ahead of real directory entries (see
+// loadFiles()). A leading SOH byte can't occur in a real FAT/exFAT filename,
+// so these can never collide with an on-disk entry; they are recognized by
+// exact match and special-cased in rebuildRowItems() (skipping
+// getFileName()/getFileExtension(), which assume a real filename shape) and
+// in activateSelected() (before the generic directory/file dispatch).
+// kParentDirMarker (all modes, whenever basepath isn't root) is the touch
+// equivalent of a short Back press; kSelectFolderMarker/kNewFolderMarker
+// (PickFolder mode only) follow it.
+constexpr const char* kParentDirMarker = "\x01PARENT_DIR";
+constexpr const char* kSelectFolderMarker = "\x01SELECT_FOLDER";
+constexpr const char* kNewFolderMarker = "\x01NEW_FOLDER";
 }  // namespace
 
 std::string getFileName(std::string filename);
@@ -68,6 +82,8 @@ void FileBrowserActivity::loadFiles() {
         if (FsHelpers::checkFileExtension(filename, ".bin")) {
           files.emplace_back(filename);
         }
+      } else if (mode == Mode::PickFolder) {
+        // Folder picker: directories only, no files.
       } else if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
                  FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
                  FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)) {
@@ -77,6 +93,17 @@ void FileBrowserActivity::loadFiles() {
   }
   root.close();
   FsHelpers::sortFileList(files);
+  // Spliced in after sorting so they stay pinned above the (sorted)
+  // subdirectories rather than being sorted in among them. PickFolder order:
+  // Select, New folder, then ".." (all before any real subdirectory); other
+  // modes just get ".." pinned first.
+  if (mode == Mode::PickFolder) {
+    std::vector<std::string> prefix = {kSelectFolderMarker, kNewFolderMarker};
+    if (basepath != "/") prefix.push_back(kParentDirMarker);
+    files.insert(files.begin(), prefix.begin(), prefix.end());
+  } else if (basepath != "/") {
+    files.insert(files.begin(), kParentDirMarker);
+  }
   rebuildRowItems();
 }
 
@@ -91,9 +118,38 @@ void FileBrowserActivity::rebuildRowItems() {
   rowItems.clear();
   rowItems.reserve(files.size());
   for (size_t i = 0; i < files.size(); i++) {
+    fui::ListItem item;
+    // Marker rows aren't real filenames: getFileName()/getFileExtension()
+    // assume a trailing '/' or a '.'-extension, neither of which these have.
+    if (files[i] == kParentDirMarker) {
+      rowNames[i] = "..";
+      rowExtensions[i].clear();
+      item.label = rowNames[i].c_str();
+      item.icon = listIconFor(UIIcon::CornerLeftUp);
+      item.actionValue = static_cast<int16_t>(i);
+      rowItems.push_back(item);
+      continue;
+    }
+    if (mode == Mode::PickFolder && files[i] == kSelectFolderMarker) {
+      rowNames[i] = tr(STR_USE_THIS_FOLDER);
+      rowExtensions[i].clear();
+      item.label = rowNames[i].c_str();
+      item.icon = listIconFor(UIIcon::Check);
+      item.actionValue = static_cast<int16_t>(i);
+      rowItems.push_back(item);
+      continue;
+    }
+    if (mode == Mode::PickFolder && files[i] == kNewFolderMarker) {
+      rowNames[i] = tr(STR_NEW_FOLDER);
+      rowExtensions[i].clear();
+      item.label = rowNames[i].c_str();
+      item.icon = listIconFor(UIIcon::FolderPlus);
+      item.actionValue = static_cast<int16_t>(i);
+      rowItems.push_back(item);
+      continue;
+    }
     rowNames[i] = getFileName(files[i]);
     rowExtensions[i] = getFileExtension(files[i]);
-    fui::ListItem item;
     item.label = rowNames[i].c_str();
     if (!rowExtensions[i].empty()) item.value = rowExtensions[i].c_str();
     item.icon = listIconFor(UITheme::getFileIcon(files[i]));
@@ -261,6 +317,30 @@ void FileBrowserActivity::activateSelected(const bool forceDelete) {
   if (nav.selected < 0 || nav.selected >= listCount()) return;
 
   const std::string& entry = files[nav.selected];
+
+  // Touch equivalent of a short Back press; valid in every mode.
+  if (entry == kParentDirMarker) {
+    goUpOneDirectory();
+    return;
+  }
+
+  // Folder picker: the two synthetic rows act, everything else below them is
+  // a plain directory to navigate into (loadFiles() never adds file entries
+  // in this mode).
+  if (mode == Mode::PickFolder) {
+    if (entry == kSelectFolderMarker) {
+      ActivityResult res{FilePathResult{basepath}};
+      res.isCancelled = false;
+      setResult(std::move(res));
+      finish();
+      return;
+    }
+    if (entry == kNewFolderMarker) {
+      promptNewFolder();
+      return;
+    }
+  }
+
   bool isDirectory = (entry.back() == '/');
 
   // Firmware picker: select file -> return path; navigate into directories normally.
@@ -337,6 +417,72 @@ void FileBrowserActivity::activateSelected(const bool forceDelete) {
   return;
 }
 
+void FileBrowserActivity::promptNewFolder() {
+  newFolderError = false;
+
+  auto handler = [this](const ActivityResult& result) {
+    if (result.isCancelled) return;
+    const auto& kb = std::get<KeyboardResult>(result.data);
+
+    // Full whitespace predicate, not just space/tab: a name that's all
+    // whitespace should read as empty, not as a valid (invisible) folder.
+    std::string name = kb.text;
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.erase(name.begin());
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+
+    // This creates exactly one folder directly under basepath: reject path
+    // separators and dot-segments rather than silently nesting or no-oping.
+    if (name.empty() || name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
+        name == "." || name == "..") {
+      newFolderError = true;
+      requestUpdate();
+      return;
+    }
+
+    std::string cleanBasePath = basepath;
+    if (cleanBasePath.back() != '/') cleanBasePath += "/";
+    const std::string fullPath = cleanBasePath + name;
+
+    if (Storage.exists(fullPath.c_str()) || Storage.mkdir(fullPath.c_str())) {
+      RenderLock lock(*this);
+      loadFiles();
+      nav.selected = static_cast<int>(findEntry(name + "/"));
+      nav.top = 0;
+      lock.unlock();
+      requestUpdate();
+    } else {
+      LOG_ERR("FileBrowser", "mkdir failed for %s", fullPath.c_str());
+      newFolderError = true;
+      requestUpdate();
+    }
+  };
+
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_NEW_FOLDER), std::string(), 63, InputType::Text),
+      handler);
+}
+
+void FileBrowserActivity::goUpOneDirectory() {
+  const std::string oldPath = basepath;
+
+  {
+    // buildScreen() runs on the render task and reads basepath plus the row
+    // caches rebuildRowItems() frees; mutate only under the render lock.
+    RenderLock lock(*this);
+    basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
+    if (basepath.empty()) basepath = "/";
+    loadFiles();
+
+    const auto pos = oldPath.find_last_of('/');
+    const std::string dirName = oldPath.substr(pos + 1) + "/";
+    nav.selected = static_cast<int>(findEntry(dirName));
+    nav.top = 0;
+    nav.follow(listCount());
+  }
+
+  requestUpdate();
+}
+
 bool FileBrowserActivity::handleCustomInput() {
   // Long press BACK (1s+) goes to root folder (Books mode only).
   // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
@@ -368,26 +514,9 @@ bool FileBrowserActivity::handleButtons() {
     // Short press: go up one directory, or go home if at root
     if (mappedInput.getHeldTime() < GO_HOME_MS) {
       if (basepath != "/") {
-        const std::string oldPath = basepath;
-
-        {
-          // buildScreen() runs on the render task and reads basepath plus the
-          // row caches rebuildRowItems() frees; mutate only under the render lock.
-          RenderLock lock(*this);
-          basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
-          if (basepath.empty()) basepath = "/";
-          loadFiles();
-
-          const auto pos = oldPath.find_last_of('/');
-          const std::string dirName = oldPath.substr(pos + 1) + "/";
-          nav.selected = static_cast<int>(findEntry(dirName));
-          nav.top = 0;
-          nav.follow(listCount());
-        }
-
-        requestUpdate();
-      } else if (mode == Mode::PickFirmware) {
-        // Firmware picker at root: cancel back to caller instead of going home.
+        goUpOneDirectory();
+      } else if (mode == Mode::PickFirmware || mode == Mode::PickFolder) {
+        // Picker at root: cancel back to caller instead of going home.
         ActivityResult res;
         res.isCancelled = true;
         setResult(std::move(res));
@@ -518,15 +647,30 @@ void FileBrowserActivity::drawChrome() {
 }
 
 void FileBrowserActivity::drawFooter() {
-  const char* backLabel = (basepath == "/") ? (mode == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
+  const char* backLabel = (basepath == "/") ? ((mode == Mode::PickFirmware || mode == Mode::PickFolder)
+                                                    ? tr(STR_BACK)
+                                                    : tr(STR_HOME))
+                                             : tr(STR_BACK);
   // In PickFirmware mode, Confirm on a .bin returns the path to the caller (not "open"); show
-  // STR_SELECT instead. Directories in the same picker still descend, so keep STR_OPEN there.
+  // STR_SELECT instead. Directories (and the ".." row, whose marker string
+  // doesn't end in '/' either) still just navigate, so keep STR_OPEN there.
   const bool selectingFirmwareFile = mode == Mode::PickFirmware && !files.empty() && nav.selected >= 0 &&
-                                     nav.selected < listCount() && files[nav.selected].back() != '/';
-  const char* confirmLabel = files.empty() ? "" : (selectingFirmwareFile ? tr(STR_SELECT) : tr(STR_OPEN));
+                                     nav.selected < listCount() && files[nav.selected] != kParentDirMarker &&
+                                     files[nav.selected].back() != '/';
+  // In PickFolder mode, Confirm on either synthetic row (use/new) acts rather than opening;
+  // directories in the same picker still descend, so keep STR_OPEN there.
+  const bool selectingFolderAction = mode == Mode::PickFolder && !files.empty() && nav.selected >= 0 &&
+                                     nav.selected < listCount() &&
+                                     (files[nav.selected] == kSelectFolderMarker || files[nav.selected] == kNewFolderMarker);
+  const char* confirmLabel =
+      files.empty() ? "" : ((selectingFirmwareFile || selectingFolderAction) ? tr(STR_SELECT) : tr(STR_OPEN));
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, files.empty() ? "" : tr(STR_DIR_UP),
                                             files.empty() ? "" : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  if (mode == Mode::PickFolder && newFolderError) {
+    GUI.drawPopup(renderer, tr(STR_NEW_FOLDER_FAILED));
+  }
 }
 
 size_t FileBrowserActivity::findEntry(const std::string& name) const {

@@ -14,6 +14,14 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 
 > If you're planning to buy an Xteink device, consider purchasing an **X3/X4 Developer Edition** through https://crosspointreader.com. CrossPoint receives a small share of each sale, helping fund development costs.
 
+## This fork's additions
+
+This is a personal fork. The features below are **not part of upstream CrossPoint** and are not intended to be upstreamed (RSS in particular falls outside [upstream's documented scope](./SCOPE.md)).
+
+- **RSS Reader**: subscribe to RSS/Atom feeds and read them as a single combined EPUB, one chapter per article. Per-feed and device-wide default download folders, local-time timestamped filenames, and opening a feed from Home jumps straight into its book instead of showing an article picker first. Manageable on-device or from the web settings UI. Up to 20 feeds.
+
+- **OPDS download folder picker**: downloading a book from an OPDS server now opens an on-device folder browser instead of always using a fixed folder. It browses the real SD card, can create a new folder on the spot, and has a dedicated ".." row to step up a level - each row carries its own icon (check for "Use this folder", folder+ for "New folder", up-arrow for ".."). The same picker also replaces free-text entry for the default and per-server OPDS download folder settings.
+
 ## What can CrossPoint do?
 
 - **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling, hyphenation, kerning, adaptive table layouts, native CJK ruby annotations, chapter navigation, footnotes, bookmarks, dictionary lookups ([StarDict](docs/dictionary.md)), go-to-percent, auto page turn, orientation control, focus reading, KOReader progress sync and more.

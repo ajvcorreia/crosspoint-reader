@@ -1,11 +1,14 @@
 #include "OpdsSettingsActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "util/OpdsFilename.h"
@@ -153,19 +156,25 @@ void OpdsSettingsActivity::handleSelection() {
                                                                    editServer.password, 63, InputType::Text),
                            handler);
   } else if (nav.selected == 4) {
-    // Download folder. Empty defers to the global default, so the keyboard
-    // prefills with whatever this server has set rather than the fallback.
+    // Download folder. Empty defers to the global default, so browse from
+    // wherever it currently resolves to (this server's own folder if set,
+    // otherwise the global default) rather than always starting at root.
+    std::string initialPath =
+        !editServer.downloadFolder.empty() ? editServer.downloadFolder
+        : (SETTINGS.opdsDownloadFolder[0] ? SETTINGS.opdsDownloadFolder : "/");
+    if (!Storage.exists(initialPath.c_str())) initialPath = "/";
+
     auto handler = [this](const ActivityResult& result) {
-      if (!result.isCancelled) {
-        const auto& kb = std::get<KeyboardResult>(result.data);
-        editServer.downloadFolder = normalizeOpdsFolder(kb.text);
-        saveServer();
-        requestUpdate();
-      }
+      if (result.isCancelled) return;
+      const auto* path = std::get_if<FilePathResult>(&result.data);
+      if (!path) return;
+      editServer.downloadFolder = normalizeOpdsFolder(path->path);
+      saveServer();
+      requestUpdate();
     };
-    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_DOWNLOAD_FOLDER),
-                                                                   editServer.downloadFolder, 63, InputType::Text),
-                           handler);
+    startActivityForResult(
+        std::make_unique<FileBrowserActivity>(renderer, mappedInput, initialPath, FileBrowserActivity::Mode::PickFolder),
+        handler);
   } else if (nav.selected == 5 && !isNewServer) {
     // Delete flow is only available for existing servers.
     if (!OPDS_STORE.removeServer(static_cast<size_t>(serverIndex))) {

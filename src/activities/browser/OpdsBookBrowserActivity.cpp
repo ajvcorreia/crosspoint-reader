@@ -13,6 +13,7 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UIScale.h"
@@ -81,7 +82,7 @@ void OpdsBookBrowserActivity::onExit() {
 void OpdsBookBrowserActivity::activateSelected() {
   if (entries.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(entries.size())) return;
   const auto& entry = entries[selectorIndex];
-  entry.type == OpdsEntryType::BOOK ? downloadBook(entry) : navigateToEntry(entry);
+  entry.type == OpdsEntryType::BOOK ? promptDownloadFolder(entry) : navigateToEntry(entry);
 }
 
 void OpdsBookBrowserActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
@@ -458,7 +459,33 @@ void OpdsBookBrowserActivity::navigateBack() {
   }
 }
 
-void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
+void OpdsBookBrowserActivity::promptDownloadFolder(const OpdsEntry& book) {
+  // The server's own folder wins; an empty one falls back to the global
+  // default, and an empty default means the SD root.
+  const char* configured = server.downloadFolder.empty() ? SETTINGS.opdsDownloadFolder : server.downloadFolder.c_str();
+  std::string initialPath = configured[0] ? configured : "/";
+  // Guard against a folder that no longer exists (e.g. the SD card was
+  // swapped) — FileBrowserActivity would otherwise treat a missing path as a
+  // file to extract the parent from.
+  if (!Storage.exists(initialPath.c_str())) initialPath = "/";
+
+  // Copy: `entries` (which `book` normally aliases into) stays untouched
+  // while this picker is on top, but downloadBook() releases it before this
+  // callback could ever run, so the copy is the only safe way to carry the
+  // selected book across that.
+  const OpdsEntry pickedBook = book;
+  auto handler = [this, pickedBook](const ActivityResult& result) {
+    if (result.isCancelled) return;
+    const auto* path = std::get_if<FilePathResult>(&result.data);
+    if (!path) return;
+    downloadBook(pickedBook, normalizeOpdsFolder(path->path));
+  };
+  startActivityForResult(
+      std::make_unique<FileBrowserActivity>(renderer, mappedInput, initialPath, FileBrowserActivity::Mode::PickFolder),
+      handler);
+}
+
+void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::string& folder) {
   state = BrowserState::DOWNLOADING;
   statusMessage = book.title;
   downloadProgress = downloadTotal = 0;
@@ -469,17 +496,13 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   // Build full download URL relative to the current feed, not the root server URL
   const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
   std::string downloadUrl = UrlUtils::buildUrl(feedUrl, book.href);
-  // The server's own folder wins; an empty one falls back to the global
-  // default, and an empty default means the SD root. Both sources are already
-  // normalized and null-terminated, and `server` outlives this call, so point
-  // at them directly — no std::string copy. exists()/mkdir() take const char*.
-  const char* folder = server.downloadFolder.empty() ? SETTINGS.opdsDownloadFolder : server.downloadFolder.c_str();
-  bool haveFolder = folder[0] != '\0';
-  if (haveFolder && !Storage.exists(folder) && !Storage.mkdir(folder)) {
+  // `folder` is already normalized (leading '/', no trailing slash; empty means SD root).
+  bool haveFolder = !folder.empty();
+  if (haveFolder && !Storage.exists(folder.c_str()) && !Storage.mkdir(folder.c_str())) {
     // exists()-guard first: mkdir's return-on-existing is unconfirmed, and every
     // existing caller checks exists() before mkdir. On real failure, fall back
     // to SD root so the download is never lost.
-    LOG_ERR("OPDS", "mkdir failed for %s, using SD root", folder);
+    LOG_ERR("OPDS", "mkdir failed for %s, using SD root", folder.c_str());
     haveFolder = false;
   }
 

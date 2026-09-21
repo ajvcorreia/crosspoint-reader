@@ -74,7 +74,10 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   void releaseEntries();
   void navigateToEntry(const OpdsEntry& entry);
   void navigateBack();
-  void downloadBook(const OpdsEntry& book);
+  // Lets the user browse to (and optionally create) a destination folder
+  // before each download, rather than always using the configured default.
+  void promptDownloadFolder(const OpdsEntry& book);
+  void downloadBook(const OpdsEntry& book, const std::string& folder);
   void launchSearch();
   void performSearch(const std::string& query);
   bool preventAutoSleep() override { return true; }

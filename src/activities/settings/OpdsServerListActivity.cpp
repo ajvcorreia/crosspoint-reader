@@ -1,6 +1,7 @@
 #include "OpdsServerListActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -13,6 +14,7 @@
 #include "OpdsSettingsActivity.h"
 #include "activities/ActivityManager.h"
 #include "activities/browser/OpdsBookBrowserActivity.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "util/OpdsFilename.h"
@@ -140,19 +142,23 @@ void OpdsServerListActivity::handleSelection() {
 
   // Index layout: [servers 0..serverCount-1], [Add Server], [Default download folder], [Filename format].
   if (nav.selected == serverCount + 1) {
+    // Browse from the current default, falling back to SD root if that
+    // folder no longer exists (e.g. the SD card was swapped).
+    std::string initialPath = SETTINGS.opdsDownloadFolder[0] ? SETTINGS.opdsDownloadFolder : "/";
+    if (!Storage.exists(initialPath.c_str())) initialPath = "/";
+
     auto folderHandler = [this](const ActivityResult& result) {
-      if (!result.isCancelled) {
-        const auto& kb = std::get<KeyboardResult>(result.data);
-        const std::string norm = normalizeOpdsFolder(kb.text);
-        strncpy(SETTINGS.opdsDownloadFolder, norm.c_str(), sizeof(SETTINGS.opdsDownloadFolder) - 1);
-        SETTINGS.opdsDownloadFolder[sizeof(SETTINGS.opdsDownloadFolder) - 1] = '\0';
-        SETTINGS.saveToFile();
-        requestUpdate();
-      }
+      if (result.isCancelled) return;
+      const auto* path = std::get_if<FilePathResult>(&result.data);
+      if (!path) return;
+      const std::string norm = normalizeOpdsFolder(path->path);
+      strncpy(SETTINGS.opdsDownloadFolder, norm.c_str(), sizeof(SETTINGS.opdsDownloadFolder) - 1);
+      SETTINGS.opdsDownloadFolder[sizeof(SETTINGS.opdsDownloadFolder) - 1] = '\0';
+      SETTINGS.saveToFile();
+      requestUpdate();
     };
     startActivityForResult(
-        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_DEFAULT_DOWNLOAD_FOLDER),
-                                                std::string(SETTINGS.opdsDownloadFolder), 63, InputType::Text),
+        std::make_unique<FileBrowserActivity>(renderer, mappedInput, initialPath, FileBrowserActivity::Mode::PickFolder),
         folderHandler);
     return;
   }
