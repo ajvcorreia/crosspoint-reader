@@ -23,6 +23,7 @@
 #include <esp_sntp.h>
 #endif
 
+#include <cstdio>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -255,6 +256,197 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
+constexpr char SLEEP_CLOCK_BASELINE_FILE[] = "/.crosspoint/sleep_clock_baseline.bin";
+
+// Any refresh immediately after the panel wakes from deep sleep gets forced
+// to a full non-differential waveform by the display driver, no matter which
+// RefreshMode is requested -- confirmed via temporary SD-file logging (this
+// device has serial disabled) that the per-draw call always reached the panel
+// with correct, narrowly-scoped parameters; the flash is the driver's
+// mandatory "cold start" pass, not a wider-than-intended redraw. Reader page
+// turns avoid it only because the device stays continuously awake between
+// turns. A plain HALF_REFRESH (same mode every other sleep screen paint in
+// this codebase uses) is simplest and most reliable; the user-configurable
+// interval (SETTINGS.getSleepClockIntervalMinutes()) trades clock freshness
+// for fewer flashes instead of chasing a flash-free redraw.
+
+// True when `hour` (0-23) falls inside the configured quiet-hours window,
+// wrapping past midnight when start > end. A zero-width window (start ==
+// end) is treated as no window at all.
+static bool isSleepClockQuietHour(uint8_t hour) {
+  if (!SETTINGS.sleepClockQuietHoursEnabled) return false;
+  const uint8_t start = SETTINGS.sleepClockQuietStartHour;
+  const uint8_t end = SETTINGS.sleepClockQuietEndHour;
+  if (start == end) return false;
+  if (start < end) return hour >= start && hour < end;
+  return hour >= start || hour < end;
+}
+
+// Minutes from (hour:minute) until the configured quiet-hours window ends.
+// Only meaningful when isSleepClockQuietHour(hour) is true.
+static uint32_t sleepClockMinutesUntilQuietHoursEnd(uint8_t hour, uint8_t minute) {
+  const uint8_t end = SETTINGS.sleepClockQuietEndHour;
+  int hoursUntilEnd = static_cast<int>(end) - static_cast<int>(hour);
+  if (hoursUntilEnd <= 0) hoursUntilEnd += 24;
+  return static_cast<uint32_t>(hoursUntilEnd) * 60 - minute;
+}
+
+// Minutes until the sleep clock's next wake: the configured interval, unless
+// the current time falls inside quiet hours, in which case it jumps straight
+// to the window's end instead of waking every interval all night for nothing.
+static uint32_t sleepClockNextWakeupMinutes(uint8_t intervalMinutes, bool haveTime, uint8_t hour, uint8_t minute) {
+  if (haveTime && isSleepClockQuietHour(hour)) return sleepClockMinutesUntilQuietHoursEnd(hour, minute);
+  return intervalMinutes;
+}
+
+// The clock/battery overlay only makes sense on sleep screens that don't
+// already show meaningful artwork of their own -- Dark, Light, and None
+// (BLANK) are plain solid screens; Custom/Cover/Cover+Custom/Quick
+// Resume/Transparent Custom show a bitmap, book cover, retained reader/home
+// frame, or transparent overlay art that the overlay text would collide with.
+static bool sleepScreenSupportsClockOverlay() {
+  switch (SETTINGS.sleepScreen) {
+    case CrossPointSettings::SLEEP_SCREEN_MODE::DARK:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::BLANK:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// StrId for the current sleep clock interval's UI label ("10 min", "1 hour",
+// etc.), or STR_NONE_OPT when there's no periodic update worth captioning
+// (interval Off, or the tightest 1-minute cadence).
+static StrId sleepClockIntervalLabel() {
+  switch (SETTINGS.sleepClockInterval) {
+    case CrossPointSettings::SLEEP_CLOCK_5_MIN:
+      return StrId::STR_SLEEP_CLOCK_INTERVAL_5;
+    case CrossPointSettings::SLEEP_CLOCK_10_MIN:
+      return StrId::STR_SLEEP_CLOCK_INTERVAL_10;
+    case CrossPointSettings::SLEEP_CLOCK_15_MIN:
+      return StrId::STR_SLEEP_CLOCK_INTERVAL_15;
+    case CrossPointSettings::SLEEP_CLOCK_30_MIN:
+      return StrId::STR_SLEEP_CLOCK_INTERVAL_30;
+    case CrossPointSettings::SLEEP_CLOCK_60_MIN:
+      return StrId::STR_SLEEP_CLOCK_INTERVAL_60;
+    default:
+      return StrId::STR_NONE_OPT;
+  }
+}
+
+// Pristine sleep screen, saved once when deep sleep is entered (before the
+// clock digits are drawn) so every later timer wake redraws from the same
+// clean source instead of compositing on top of the previous draw's digits.
+// Unlike loadSleepFrameBuffer()/SLEEP_FRAME_FILE (a one-shot Quick Resume
+// consume-on-wake file), this file is kept and reloaded on every wake until
+// the next real sleep entry overwrites it.
+// Best-effort for grayscale cover/custom sleep screens: it captures whatever
+// is in the primary BW plane after rendering, which may not carry the
+// grayscale shading of the original art.
+static bool saveSleepClockBaseline() {
+  HalFile file;
+  if (!Storage.openFileForWrite("SLP", SLEEP_CLOCK_BASELINE_FILE, file)) return false;
+  const bool ok = file.write(renderer.getFrameBuffer(), renderer.getBufferSize()) == renderer.getBufferSize();
+  file.close();
+  return ok;
+}
+
+static bool loadSleepClockBaseline() {
+  HalFile file;
+  if (!Storage.openFileForRead("SLP", SLEEP_CLOCK_BASELINE_FILE, file)) return false;
+  const size_t bufferSize = display.getBufferSize();
+  const size_t bytesRead = file.read(display.getFrameBuffer(), bufferSize);
+  file.close();
+  return bytesRead == bufferSize;
+}
+
+// Draws the current time and/or battery percentage just below the "SLEEPING"
+// line of the default sleep screen (renderDefaultSleepScreen()'s own layout
+// uses pageHeight/2 + 70/+95 for its two lines) into whatever is currently in
+// the framebuffer. Clock and battery are independent settings: both draws the
+// battery ahead of the time ("87%  14:32"); battery alone is centered on its
+// own. Caller picks the refresh method and displays. Returns false if there
+// was nothing to draw (both settings off, the current sleep screen doesn't
+// support the overlay, or the RTC read failed and battery was also off).
+static bool drawSleepClockOverlay() {
+  if (!sleepScreenSupportsClockOverlay()) return false;
+  const bool wantClock = SETTINGS.getSleepClockIntervalMinutes() > 0 && halClock.isAvailable();
+  const bool wantBattery = SETTINGS.sleepScreenShowBattery != 0;
+
+  char timeBuf[16] = {0};
+  const bool haveClockText =
+      wantClock && halClock.formatTime(timeBuf, sizeof(timeBuf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1);
+
+  char lineBuf[32];
+  if (haveClockText && wantBattery) {
+    if (SETTINGS.sleepScreenBatteryFirst) {
+      snprintf(lineBuf, sizeof(lineBuf), "%u%%  %s", powerManager.getBatteryPercentage(), timeBuf);
+    } else {
+      snprintf(lineBuf, sizeof(lineBuf), "%s  %u%%", timeBuf, powerManager.getBatteryPercentage());
+    }
+  } else if (haveClockText) {
+    snprintf(lineBuf, sizeof(lineBuf), "%s", timeBuf);
+  } else if (wantBattery) {
+    snprintf(lineBuf, sizeof(lineBuf), "%u%%", powerManager.getBatteryPercentage());
+  } else {
+    return false;
+  }
+
+  // The Dark preset inverts the whole buffer (renderer.invertScreen()) before
+  // this runs, so its background is already black -- draw light ink there.
+  // Other presets (Light, custom/cover art, blank) keep a light background.
+  const bool blackInk = SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::DARK;
+  const auto pageHeight = renderer.getScreenHeight();
+  const int lineY = pageHeight / 2 + 120;
+  renderer.drawCenteredText(UI_12_FONT_ID, lineY, lineBuf, blackInk, EpdFontFamily::BOLD);
+
+  // Caption the update cadence below the line, but only while the clock is
+  // actually the thing periodically redrawing (battery-only mode never wakes
+  // to update) and only above the tightest 1-minute cadence, where it'd be
+  // more noise than useful information.
+  if (haveClockText) {
+    const StrId intervalLabel = sleepClockIntervalLabel();
+    if (intervalLabel != StrId::STR_NONE_OPT) {
+      char captionBuf[48];
+      snprintf(captionBuf, sizeof(captionBuf), I18N.get(StrId::STR_SLEEP_CLOCK_UPDATED_EVERY), I18N.get(intervalLabel));
+      const int captionY = lineY + renderer.getLineHeight(UI_12_FONT_ID) + 4;
+      renderer.drawCenteredText(SMALL_FONT_ID, captionY, captionBuf, blackInk);
+    }
+  }
+  return true;
+}
+
+// Timer-wake fast path: redraw the clock from the saved baseline and re-enter
+// deep sleep with both wake sources re-armed. Does not return in practice.
+static void wakeForSleepClockAndResleep() {
+  uint8_t hour = 0, minute = 0;
+  const bool haveTime = halClock.getTime(hour, minute);
+  const uint8_t intervalMinutes = SETTINGS.getSleepClockIntervalMinutes();
+  if (loadSleepClockBaseline()) {
+    drawSleepClockOverlay();
+    // This wake cadence doesn't necessarily land exactly on :00, so treat any
+    // wake within one interval of the top of the hour as "close enough":
+    // clear accumulated ghosting with the full GC waveform there; every other
+    // wake uses the plain single-pass refresh every other sleep screen paint
+    // in this codebase already uses.
+    const bool nearTopOfHour = haveTime && intervalMinutes > 0 && minute < intervalMinutes;
+    renderer.displayBuffer(nearTopOfHour ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  }
+  // Missing/corrupt baseline: skip the redraw (no panel flash) and just
+  // re-arm both wake sources; a future real sleep entry rewrites the file.
+
+  // intervalMinutes should never be 0 here (nothing arms this wake path
+  // otherwise), but fall back to 1 rather than a 0-minute busy-wake loop.
+  const uint32_t nextWakeupMinutes =
+      sleepClockNextWakeupMinutes(intervalMinutes > 0 ? intervalMinutes : 1, haveTime, hour, minute);
+
+  halTiltSensor.deepSleep();
+  display.deepSleep();
+  Storage.prepareForDeepSleep();
+  powerManager.startDeepSleep(gpio, static_cast<uint64_t>(nextWakeupMinutes) * 60ULL * 1000000ULL);
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -282,6 +474,28 @@ void enterDeepSleep(bool fromTimeout = false) {
     Storage.remove(SLEEP_FRAME_FILE);
   }
 
+  // Sleep screen clock and/or battery percentage. Clock (optionally with
+  // battery alongside it) needs a pristine baseline for later timer wakes to
+  // reload; battery alone is a one-time draw with no periodic wake, since the
+  // percentage doesn't need to stay fresh while the device sits asleep.
+  uint64_t sleepClockWakeupUs = 0;
+  const uint8_t sleepClockIntervalMinutes = SETTINGS.getSleepClockIntervalMinutes();
+  const bool sleepClockOverlaySupported = sleepScreenSupportsClockOverlay();
+  if (sleepClockIntervalMinutes > 0 && halClock.isAvailable() && sleepClockOverlaySupported) {
+    if (saveSleepClockBaseline()) {
+      // Only arm the periodic wake once the baseline actually made it to SD
+      // -- otherwise every wake would find nothing to redraw and just burn
+      // battery in a silent loop until the next real sleep entry.
+      if (drawSleepClockOverlay()) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      uint8_t hour = 0, minute = 0;
+      const bool haveTime = halClock.getTime(hour, minute);
+      const uint32_t wakeupMinutes = sleepClockNextWakeupMinutes(sleepClockIntervalMinutes, haveTime, hour, minute);
+      sleepClockWakeupUs = static_cast<uint64_t>(wakeupMinutes) * 60ULL * 1000000ULL;
+    }
+  } else if (SETTINGS.sleepScreenShowBattery && sleepClockOverlaySupported) {
+    if (drawSleepClockOverlay()) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  }
+
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.
   if (WiFi.getMode() != WIFI_MODE_NULL) {
@@ -294,7 +508,7 @@ void enterDeepSleep(bool fromTimeout = false) {
   Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio);
+  powerManager.startDeepSleep(gpio, sleepClockWakeupUs);
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -425,6 +639,25 @@ void setup() {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
   SETTINGS.loadFromFile();
+
+  // Sleep screen clock timer wake: redraw the time and go straight back to
+  // deep sleep. Skips the stores/theme/frontlight setup below and the normal
+  // activity routing entirely -- this is not a user-visible wake.
+  if (wakeupReason == HalGPIO::WakeupReason::Timer) {
+    if (SETTINGS.getSleepClockIntervalMinutes() > 0 && halClock.isAvailable() && sleepScreenSupportsClockOverlay()) {
+      setupDisplayAndFonts(/*seamless=*/true);
+      wakeForSleepClockAndResleep();
+    } else {
+      // Stale timer arm (feature disabled, RTC lost, or sleep screen mode
+      // changed since the last real sleep entry): fall back to a normal
+      // power-button-only re-sleep so the device does not boot the UI, and
+      // stop re-arming the timer.
+      Storage.prepareForDeepSleep();
+      powerManager.startDeepSleep(gpio);
+    }
+    return;
+  }
+
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();

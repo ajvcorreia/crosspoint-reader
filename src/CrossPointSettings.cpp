@@ -348,6 +348,26 @@ int CrossPointSettings::getRefreshFrequency() const {
   }
 }
 
+uint8_t CrossPointSettings::getSleepClockIntervalMinutes() const {
+  switch (sleepClockInterval) {
+    case SLEEP_CLOCK_OFF:
+    default:
+      return 0;
+    case SLEEP_CLOCK_1_MIN:
+      return 1;
+    case SLEEP_CLOCK_5_MIN:
+      return 5;
+    case SLEEP_CLOCK_10_MIN:
+      return 10;
+    case SLEEP_CLOCK_15_MIN:
+      return 15;
+    case SLEEP_CLOCK_30_MIN:
+      return 30;
+    case SLEEP_CLOCK_60_MIN:
+      return 60;
+  }
+}
+
 void CrossPointSettings::clearSdFontFamily() {
   sdFontFamilyName[0] = '\0';
   fontPointSize =

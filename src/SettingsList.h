@@ -215,6 +215,15 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
 
+    std::vector<StrId> sleepClockIntervalValues(CrossPointSettings::SLEEP_CLOCK_INTERVAL_COUNT);
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_OFF] = StrId::STR_STATE_OFF;
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_1_MIN] = StrId::STR_SLEEP_CLOCK_INTERVAL_1;
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_5_MIN] = StrId::STR_SLEEP_CLOCK_INTERVAL_5;
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_10_MIN] = StrId::STR_SLEEP_CLOCK_INTERVAL_10;
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_15_MIN] = StrId::STR_SLEEP_CLOCK_INTERVAL_15;
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_30_MIN] = StrId::STR_SLEEP_CLOCK_INTERVAL_30;
+    sleepClockIntervalValues[CrossPointSettings::SLEEP_CLOCK_60_MIN] = StrId::STR_SLEEP_CLOCK_INTERVAL_60;
+
     std::vector<SettingInfo> v = {
         // --- Display ---
         SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
@@ -227,6 +236,18 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_QUICK_RESUME_TIMEOUT, &CrossPointSettings::quickResumeSleepScreen,
                           {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "quickResumeSleepScreen",
                           StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_SLEEP_CLOCK, &CrossPointSettings::sleepClockInterval,
+                          std::move(sleepClockIntervalValues), "sleepClockInterval", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_SLEEP_SCREEN_BATTERY, &CrossPointSettings::sleepScreenShowBattery,
+                            "sleepScreenShowBattery", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_SLEEP_SCREEN_BATTERY_FIRST, &CrossPointSettings::sleepScreenBatteryFirst,
+                            "sleepScreenBatteryFirst", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_SLEEP_CLOCK_QUIET_HOURS, &CrossPointSettings::sleepClockQuietHoursEnabled,
+                            "sleepClockQuietHoursEnabled", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Value(StrId::STR_SLEEP_CLOCK_QUIET_START, &CrossPointSettings::sleepClockQuietStartHour,
+                           {0, 23, 1}, "sleepClockQuietStartHour", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Value(StrId::STR_SLEEP_CLOCK_QUIET_END, &CrossPointSettings::sleepClockQuietEndHour, {0, 23, 1},
+                           "sleepClockQuietEndHour", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_HIDE_BATTERY, &CrossPointSettings::hideBatteryPercentage,
                           {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
                           StrId::STR_CAT_DISPLAY),

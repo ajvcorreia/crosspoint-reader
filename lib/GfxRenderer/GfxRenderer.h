@@ -221,8 +221,13 @@ class GfxRenderer {
       HalDisplay::GrayscaleMode mode = HalDisplay::GrayscaleMode::Overlay) const;
   // Compatibility queries for Overlay mode.
   bool supportsAsyncGrayscaleBase() const;
-  // EXPERIMENTAL: Windowed update - display only a rectangular region
-  // void displayWindow(int x, int y, int width, int height) const;
+  // EXPERIMENTAL: Windowed update - display only a rectangular region of the
+  // panel instead of the whole frame, in screen coordinates (rotated and
+  // snapped to the panel's 8px byte alignment via screenRectToAlignedMemRect,
+  // same transform as readFramebufferRegion/writeFramebufferRegion). Far less
+  // visually disruptive than a full-panel refresh for a small changing area
+  // (e.g. an overlay clock). No-op if the rect is empty or fully off-panel.
+  void displayWindow(int x, int y, int width, int height, bool turnOffScreen = false) const;
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;

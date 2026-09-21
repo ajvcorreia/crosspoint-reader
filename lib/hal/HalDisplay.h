@@ -66,6 +66,15 @@ class HalDisplay {
   bool supportsAsyncGrayscaleBase() const;
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
+  // Refresh only a rectangle of the panel instead of the whole frame -- far
+  // less visually disruptive than a full-panel refresh for a small changing
+  // region (e.g. the sleep screen clock). EXPERIMENTAL (see
+  // EInkDisplay::displayWindow). x/y/w/h are PANEL-MEMORY coordinates, already
+  // rotated for orientation and snapped to the panel's 8px byte alignment --
+  // call GfxRenderer::displayWindow() (screen coordinates) instead of this
+  // directly unless you have already done that conversion.
+  void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+
   // Output polarity. The framebuffer remains in normal polarity; inversion is
   // applied by the display driver while sending it to the panel.
   void setInverted(bool inverted);

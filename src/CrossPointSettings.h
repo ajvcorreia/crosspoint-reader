@@ -24,6 +24,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     TRANSPARENT_CUSTOM = 7,
     SLEEP_SCREEN_MODE_COUNT
   };
+  // How often the sleep screen clock/battery redraw via an RTC timer wake;
+  // OFF disables the periodic wake entirely. See getSleepClockIntervalMinutes().
+  enum SLEEP_CLOCK_INTERVAL {
+    SLEEP_CLOCK_OFF = 0,
+    SLEEP_CLOCK_1_MIN = 1,
+    SLEEP_CLOCK_5_MIN = 2,
+    SLEEP_CLOCK_10_MIN = 3,
+    SLEEP_CLOCK_15_MIN = 4,
+    SLEEP_CLOCK_30_MIN = 5,
+    SLEEP_CLOCK_60_MIN = 6,
+    SLEEP_CLOCK_INTERVAL_COUNT
+  };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_FILTER {
     NO_FILTER = 0,
@@ -205,6 +217,26 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
+  // Show a clock on the sleep screen, periodically redrawn via an RTC timer
+  // wake (requires halClock.isAvailable()); see main.cpp enterDeepSleep()/
+  // wakeForSleepClockAndResleep(). SLEEP_CLOCK_OFF disables it.
+  uint8_t sleepClockInterval = SLEEP_CLOCK_OFF;
+  // Show battery percentage on the sleep screen. Independent of
+  // sleepClockInterval: shown next to the clock when both are on, centered on
+  // its own (one-time draw, no periodic wake) when the clock is off.
+  uint8_t sleepScreenShowBattery = 1;
+  // When the sleep screen shows both the clock and battery together, whether
+  // battery comes before (left of) the time or after.
+  uint8_t sleepScreenBatteryFirst = 1;
+  // Suppress the sleep clock's periodic timer wake during a nightly window
+  // [sleepClockQuietStartHour, sleepClockQuietEndHour) (24h, wraps past
+  // midnight when start > end; a zero-width window is treated as disabled).
+  // Ignored unless sleepClockQuietHoursEnabled. The clock still draws once
+  // whenever the device is put to sleep, even inside the window -- only the
+  // periodic re-wake is skipped, resuming exactly at the window's end.
+  uint8_t sleepClockQuietHoursEnabled = 0;
+  uint8_t sleepClockQuietStartHour = 22;
+  uint8_t sleepClockQuietEndHour = 7;
   // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
   uint8_t statusBarBookProgressPercentage = 1;
@@ -405,6 +437,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   float getReaderLineCompression() const;
   unsigned long getSleepTimeoutMs() const;
   int getRefreshFrequency() const;
+  uint8_t getSleepClockIntervalMinutes() const;
 };
 
 // Helper macro to access settings
